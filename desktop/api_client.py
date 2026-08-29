@@ -1,7 +1,7 @@
 import requests
 
 class ApiClient:
-    def __init__(self, base_url="http://127.0.0.1:8000"):
+    def __init__(self, base_url="https://dd-beatmaker-crm.onrender.com"):
         self.base_url = base_url.rstrip("/")
         self.token = None
         self.user = None
