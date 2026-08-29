@@ -2637,64 +2637,146 @@ class SettingsTab(QWidget):
     def __init__(self, api):
         super().__init__()
         self.api = api
+
         root = QVBoxLayout(self)
         root.setContentsMargins(30, 26, 30, 24)
         root.setSpacing(14)
 
+        # Header — the approved redesign keeps the D&D dark/purple product language.
+        header = QVBoxLayout()
+        header.setSpacing(4)
         title = QLabel("Settings")
         title.setObjectName("title")
-        root.addWidget(title)
+        header.addWidget(title)
+        subtitle = QLabel("Customize your workspace, defaults, backups and account preferences.")
+        subtitle.setObjectName("mutedLabel")
+        subtitle.setStyleSheet("font-size:13px;")
+        header.addWidget(subtitle)
+        root.addLayout(header)
 
+        # APPEARANCE
         appearance = QFrame(); appearance.setObjectName("sectionCard")
-        av = QVBoxLayout(appearance); av.setContentsMargins(18,16,18,16); av.setSpacing(10)
-        h=QLabel("APPEARANCE"); h.setStyleSheet("font-size:12px;font-weight:750;letter-spacing:.4px;")
-        av.addWidget(h)
-        row=QHBoxLayout(); row.addWidget(QLabel("Theme")); row.addStretch()
-        self.theme=QComboBox(); self.theme.addItem("Dark","dark"); self.theme.addItem("Light","light")
-        current=(api.user or {}).get("theme","dark")
-        self.theme.setCurrentIndex(1 if current=="light" else 0)
-        self.theme.currentIndexChanged.connect(self.on_theme_changed); row.addWidget(self.theme)
+        av = QVBoxLayout(appearance); av.setContentsMargins(22,20,22,20); av.setSpacing(16)
+        top = QHBoxLayout(); top.setSpacing(12)
+        icon = QLabel("✦"); icon.setFixedSize(38,38); icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet("background:#211536;color:#B96CFF;border:1px solid #4A2B69;border-radius:12px;font-size:18px;font-weight:800;")
+        top.addWidget(icon)
+        texts = QVBoxLayout(); texts.setSpacing(2)
+        h = QLabel("Appearance"); h.setObjectName("cardTitle"); texts.addWidget(h)
+        desc = QLabel("Choose how D&D looks on this device."); desc.setObjectName("mutedLabel"); texts.addWidget(desc)
+        top.addLayout(texts,1)
+        av.addLayout(top)
+        divider = QFrame(); divider.setFrameShape(QFrame.Shape.HLine); divider.setStyleSheet("color:#1B2534;"); av.addWidget(divider)
+
+        row = QHBoxLayout(); row.setSpacing(16)
+        row_text = QVBoxLayout(); row_text.setSpacing(2)
+        label = QLabel("Theme"); label.setStyleSheet("font-size:14px;font-weight:700;")
+        row_text.addWidget(label)
+        hint = QLabel("Switch between the dark and light interface."); hint.setObjectName("mutedLabel"); row_text.addWidget(hint)
+        row.addLayout(row_text,1)
+        self.theme = QComboBox(); self.theme.setMinimumWidth(210)
+        self.theme.addItem("Dark", "dark"); self.theme.addItem("Light", "light")
+        current = (api.user or {}).get("theme", "dark")
+        self.theme.setCurrentIndex(1 if current == "light" else 0)
+        self.theme.currentIndexChanged.connect(self.on_theme_changed)
+        row.addWidget(self.theme,0,Qt.AlignmentFlag.AlignVCenter)
         av.addLayout(row)
-        save=QPushButton("Save Settings"); save.setObjectName("primary"); save.clicked.connect(self.save); av.addWidget(save)
+
+        save_row = QHBoxLayout(); save_row.addStretch()
+        save = QPushButton("Save Settings"); save.setObjectName("primary"); save.setMinimumHeight(42); save.setMinimumWidth(180)
+        save.clicked.connect(self.save); save_row.addWidget(save)
+        av.addLayout(save_row)
         root.addWidget(appearance)
 
-        finance=QFrame(); finance.setObjectName("sectionCard")
-        fv=QVBoxLayout(finance); fv.setContentsMargins(18,16,18,16); fv.setSpacing(10)
-        fh=QLabel("PROFILE DEFAULTS"); fh.setStyleSheet("font-size:12px;font-weight:750;letter-spacing:.4px;"); fv.addWidget(fh)
-        fr=QHBoxLayout(); fr.addWidget(QLabel("Default currency")); fr.addStretch()
-        self.currency=QComboBox()
-        for label,code in (("USD — US Dollar","USD"),("EUR — Euro","EUR"),("CHF — Swiss Franc","CHF")): self.currency.addItem(label,code)
-        current_currency=(api.user or {}).get("currency","USD")
-        idx=self.currency.findData(current_currency); self.currency.setCurrentIndex(idx if idx >= 0 else 0)
-        fr.addWidget(self.currency); fv.addLayout(fr)
-        hint=QLabel("This becomes the default currency for new licenses and goals. Existing records keep their original currency."); hint.setWordWrap(True); hint.setStyleSheet("color:#8994A8;font-size:12px;"); fv.addWidget(hint)
-        root.addWidget(finance)
+        # DEFAULTS
+        defaults = QFrame(); defaults.setObjectName("sectionCard")
+        dv = QVBoxLayout(defaults); dv.setContentsMargins(22,20,22,20); dv.setSpacing(16)
+        top = QHBoxLayout(); top.setSpacing(12)
+        icon = QLabel("¤"); icon.setFixedSize(38,38); icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet("background:#171D2A;color:#C7D2E5;border:1px solid #2B374A;border-radius:12px;font-size:17px;font-weight:800;")
+        top.addWidget(icon)
+        texts = QVBoxLayout(); texts.setSpacing(2)
+        h = QLabel("Profile defaults"); h.setObjectName("cardTitle"); texts.addWidget(h)
+        desc = QLabel("Used automatically when you create new records."); desc.setObjectName("mutedLabel"); texts.addWidget(desc)
+        top.addLayout(texts,1); dv.addLayout(top)
+        divider = QFrame(); divider.setFrameShape(QFrame.Shape.HLine); divider.setStyleSheet("color:#1B2534;"); dv.addWidget(divider)
+        row = QHBoxLayout(); row.setSpacing(16)
+        text_col = QVBoxLayout(); text_col.setSpacing(2)
+        text_col.addWidget(QLabel("Default currency"))
+        hint = QLabel("Existing records keep their original currency."); hint.setObjectName("mutedLabel"); text_col.addWidget(hint)
+        row.addLayout(text_col,1)
+        self.currency = QComboBox(); self.currency.setMinimumWidth(230)
+        for label, code in (("USD — US Dollar", "USD"), ("EUR — Euro", "EUR"), ("CHF — Swiss Franc", "CHF")):
+            self.currency.addItem(label, code)
+        current_currency = (api.user or {}).get("currency", "USD")
+        idx = self.currency.findData(current_currency); self.currency.setCurrentIndex(idx if idx >= 0 else 0)
+        row.addWidget(self.currency,0,Qt.AlignmentFlag.AlignVCenter)
+        dv.addLayout(row)
+        root.addWidget(defaults)
 
-        safety=QFrame(); safety.setObjectName("sectionCard")
-        sv=QVBoxLayout(safety); sv.setContentsMargins(18,16,18,16); sv.setSpacing(9)
-        sh=QLabel("AUTOMATION & SAFETY"); sh.setObjectName("sectionLabel"); sv.addWidget(sh)
-        self.auto_backup=QCheckBox("Automatic local backup every 10 minutes")
+        # AUTOMATION
+        safety = QFrame(); safety.setObjectName("sectionCard")
+        sv = QVBoxLayout(safety); sv.setContentsMargins(22,20,22,20); sv.setSpacing(14)
+        top = QHBoxLayout(); top.setSpacing(12)
+        icon = QLabel("✓"); icon.setFixedSize(38,38); icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet("background:#10241B;color:#55D79B;border:1px solid #1F563C;border-radius:12px;font-size:17px;font-weight:800;")
+        top.addWidget(icon)
+        texts = QVBoxLayout(); texts.setSpacing(2)
+        h = QLabel("Automation & safety"); h.setObjectName("cardTitle"); texts.addWidget(h)
+        desc = QLabel("Keep a local copy of your workspace automatically."); desc.setObjectName("mutedLabel"); texts.addWidget(desc)
+        top.addLayout(texts,1); sv.addLayout(top)
+        divider = QFrame(); divider.setFrameShape(QFrame.Shape.HLine); divider.setStyleSheet("color:#1B2534;"); sv.addWidget(divider)
+        self.auto_backup = QCheckBox("Automatic local backup every 10 minutes")
         self.auto_backup.setChecked(bool(_load_prefs().get("auto_backup", False)))
         self.auto_backup.stateChanged.connect(lambda state: _save_pref("auto_backup", bool(state)))
+        self.auto_backup.setStyleSheet("font-size:14px;font-weight:650;")
         sv.addWidget(self.auto_backup)
-        bh=QLabel("Backups are stored locally in the D&D application data folder. The latest 20 copies are kept.")
-        bh.setWordWrap(True); bh.setStyleSheet("color:#8994A8;font-size:12px;"); sv.addWidget(bh)
+        bh = QLabel("Backups are stored locally in the D&D application data folder. The latest 20 copies are kept.")
+        bh.setWordWrap(True); bh.setObjectName("mutedLabel"); sv.addWidget(bh)
         root.addWidget(safety)
 
-        account=QFrame(); account.setObjectName("sectionCard")
-        q=QVBoxLayout(account); q.setContentsMargins(18,16,18,16); q.setSpacing(7)
-        h=QLabel("ACCOUNT"); h.setStyleSheet("font-size:12px;font-weight:750;letter-spacing:.4px;"); q.addWidget(h)
-        q.addWidget(QLabel(f"Username: {canonical_producer_label((api.user or {}).get('username','—'))}"))
-        q.addWidget(QLabel(f"Email: {(api.user or {}).get('email','—')}"))
-        q.addWidget(QLabel("Google Drive sync is disabled in D&D. Beats are managed locally as MP3 files."))
-        root.addWidget(account)
+        lower = QGridLayout(); lower.setHorizontalSpacing(14); lower.setVerticalSpacing(14)
+        lower.setColumnStretch(0, 1); lower.setColumnStretch(1, 1)
 
-        data_box=QFrame(); data_box.setObjectName("sectionCard"); dv=QVBoxLayout(data_box); dv.setContentsMargins(18,16,18,16); dv.setSpacing(10); dh=QLabel("DATA & SAFETY"); dh.setObjectName("sectionLabel"); dv.addWidget(dh)
-        grid=QGridLayout(); grid.setHorizontalSpacing(10); grid.setVerticalSpacing(10)
-        actions=[("export","Export backup",self.export_backup),("import","Import backup",self.import_backup),("trash","Open Trash",lambda:TrashDialog(self.api,self).exec()),("artists","My Collaborators",lambda:CollaboratorsDialog(self.api,self).exec()),("settings","Run diagnostics",self.run_diagnostics),("refresh","Check for updates",self.check_updates)]
-        for i,(icon,text,cb) in enumerate(actions):
-            b=QPushButton(text); b.setObjectName("dataAction"); b.setIcon(ui_icon(icon)); b.setIconSize(QSize(17,17)); b.setMinimumHeight(42); b.clicked.connect(cb); grid.addWidget(b,i//2,i%2)
-        dv.addLayout(grid); root.addWidget(data_box)
+        # ACCOUNT
+        account = QFrame(); account.setObjectName("sectionCard")
+        av2 = QVBoxLayout(account); av2.setContentsMargins(22,20,22,20); av2.setSpacing(12)
+        h = QLabel("Account"); h.setObjectName("cardTitle"); av2.addWidget(h)
+        sub = QLabel("Your D&D workspace identity."); sub.setObjectName("mutedLabel"); av2.addWidget(sub)
+        for label, value in (
+            ("USERNAME", canonical_producer_label((api.user or {}).get("username", "—"))),
+            ("EMAIL", (api.user or {}).get("email", "—")),
+        ):
+            row_box = QFrame(); row_box.setStyleSheet("background:#0F1622;border:1px solid #1E2A3B;border-radius:12px;")
+            rv = QVBoxLayout(row_box); rv.setContentsMargins(13,10,13,10); rv.setSpacing(3)
+            l = QLabel(label); l.setStyleSheet("color:#727D90;font-size:9px;font-weight:800;letter-spacing:1px;"); rv.addWidget(l)
+            v = QLabel(str(value)); v.setStyleSheet("color:#EEF1F7;font-size:13px;font-weight:650;"); v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); rv.addWidget(v)
+            av2.addWidget(row_box)
+        info = QLabel("Google Drive sync is disabled. Beats are managed locally as MP3 files.")
+        info.setWordWrap(True); info.setObjectName("mutedLabel"); info.setStyleSheet("font-size:11px;padding-top:4px;")
+        av2.addWidget(info); av2.addStretch()
+        lower.addWidget(account, 0, 0)
+
+        # DATA & SAFETY
+        data_box = QFrame(); data_box.setObjectName("sectionCard")
+        dv2 = QVBoxLayout(data_box); dv2.setContentsMargins(22,20,22,20); dv2.setSpacing(12)
+        h = QLabel("Data & safety"); h.setObjectName("cardTitle"); dv2.addWidget(h)
+        sub = QLabel("Manage backups, workspace tools and updates."); sub.setObjectName("mutedLabel"); dv2.addWidget(sub)
+        grid = QGridLayout(); grid.setHorizontalSpacing(10); grid.setVerticalSpacing(10)
+        actions = [
+            ("export", "Export backup", self.export_backup),
+            ("import", "Import backup", self.import_backup),
+            ("trash", "Open Trash", lambda: TrashDialog(self.api, self).exec()),
+            ("artists", "My Collaborators", lambda: CollaboratorsDialog(self.api, self).exec()),
+            ("settings", "Run diagnostics", self.run_diagnostics),
+            ("settings", "Check for updates", self.check_updates),
+        ]
+        for i, (icon_name, text, cb) in enumerate(actions):
+            b = QPushButton(text); b.setObjectName("dataAction"); b.setIcon(ui_icon(icon_name)); b.setIconSize(QSize(17,17)); b.setMinimumHeight(46)
+            b.clicked.connect(cb); grid.addWidget(b, i // 2, i % 2)
+        dv2.addLayout(grid); dv2.addStretch()
+        lower.addWidget(data_box, 0, 1)
+        root.addLayout(lower)
         root.addStretch()
 
     def import_backup(self):
