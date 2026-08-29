@@ -1,0 +1,29 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: dd
+      POSTGRES_PASSWORD: dd
+      POSTGRES_DB: dd
+    volumes:
+      - dd_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dd -d dd"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://dd:dd@db:5432/dd
+      JWT_SECRET: CHANGE-ME-IN-PRODUCTION
+      ADMIN_EMAIL: quikinnnproducer@gmail.com
+      CORS_ORIGINS: "*"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  dd_pg:

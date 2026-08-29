@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0",
+  "channel": "stable",
+  "package_url": "https://YOUR-HOST/DD_1.0.0.zip",
+  "sha256": "PUT_SHA256_HERE",
+  "notes": [
+    "Finance & Payments: stable revenue split and messenger earnings",
+    "Statistics: accurate personal revenue and multi-currency display",
+    "User Experience: dynamic greeting and reliability fixes"
+  ]
+}
