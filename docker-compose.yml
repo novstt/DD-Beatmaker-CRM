@@ -13,8 +13,11 @@ services:
       timeout: 3s
       retries: 15
       start_period: 5s
+
   api:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
     environment:
       DATABASE_URL: postgresql+psycopg://dd:dd@db:5432/dd
       JWT_SECRET: CHANGE-ME-IN-PRODUCTION
@@ -25,5 +28,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
 volumes:
   dd_pg:
