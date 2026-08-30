@@ -206,7 +206,24 @@ def bulk_update(data:BulkBeatUpdate,db:Session=Depends(get_db),current_user:User
         raise HTTPException(422,"Unsupported beat status")
     if data.bpm is not None and (data.bpm < 1 or data.bpm > 400):
         raise HTTPException(422,"BPM must be between 1 and 400")
-    rows=list(db.scalars(select(Beat).where(Beat.id.in_(data.beat_ids),or_(Beat.user_id==current_user.id,Beat.messenger_id==current_user.id))).all())
+    rows = list(
+        db.scalars(
+            select(Beat)
+            .outerjoin(
+                BeatProducer,
+                BeatProducer.beat_id == Beat.id,
+            )
+            .where(
+                Beat.id.in_(data.beat_ids),
+                or_(
+                    Beat.user_id == current_user.id,
+                    Beat.messenger_id == current_user.id,
+                    BeatProducer.user_id == current_user.id,
+                ),
+            )
+            .distinct()
+        ).all()
+    )
     if len(rows)!=len(set(data.beat_ids)):
         raise HTTPException(403,"One or more selected beats are not accessible")
     tag_name=(data.add_tag or "").strip().lower()[:60]
