@@ -129,41 +129,175 @@ def create_beat(data:BeatCreate,db:Session=Depends(get_db),current_user:User=Dep
     db.commit(); db.refresh(beat); return beat_payload(beat,db)
 
 @router.put("/{beat_id}",response_model=BeatOut)
-def update_beat(beat_id:int,data:BeatUpdate,db:Session=Depends(get_db),current_user:User=Depends(get_current_user)):
-    beat=db.scalar(select(Beat).outerjoin(BeatProducer,BeatProducer.beat_id==Beat.id).where(Beat.id==beat_id,or_(Beat.user_id==current_user.id,Beat.messenger_id==current_user.id,BeatProducer.user_id==current_user.id)).distinct())
-    if not beat: raise HTTPException(404,"Beat not found")
-    producer=resolve_user(db,data.producer_username)
-    if not producer: raise HTTPException(404,"Producer account not found")
-    old_registered_ids={p.user_id for p in list(beat.producers) if p.user_id}
-    users=[]; external=[]; seen_ids=set(); seen_external=set()
-    def add_user(u):
-        if u and u.id not in seen_ids:
-            users.append(u); seen_ids.add(u.id)
-    # Do not add the editor automatically. Credits come only from the fields.
-    add_user(producer)
-    for raw in data.co_producer_usernames:
-        raw=(raw or '').strip()
-        if not raw: continue
-        u=resolve_user(db,raw)
-        if u: add_user(u)
-        elif key(raw) not in seen_external:
-            external.append(raw); seen_external.add(key(raw))
-    shares=pct_list(len(users)+len(external))
-    # Keep the original workspace owner when possible. For old records created
-    # with the previous bug, ownership remains the account that created/edited it;
-    # the producer list is now the single source of truth for credits and splits.
-    beat.messenger_id=None; beat.name=data.name.strip(); beat.bpm=data.bpm; beat.musical_key=data.musical_key.strip() if data.musical_key else None; beat.status=data.status
-    for p in list(beat.producers): db.delete(p)
-    for c in list(beat.credits): db.delete(c)
-    db.flush()
-    for idx,u in enumerate(users):
-        db.add(BeatProducer(beat_id=beat.id,user_id=u.id,share_percent=shares[idx]))
-        if u.id not in old_registered_ids and u.id != current_user.id:
-            db.add(Notification(user_id=u.id,type="co_producer_added",title="You were added to a beat",message=f'{current_user.username} added you to "{beat.name}". Your share is {shares[idx]}%.',is_read=False))
-    for idx,raw in enumerate(external,start=len(users)):
-        db.add(BeatCredit(beat_id=beat.id,user_id=None,display_name=canonical(raw),handle=raw if raw.startswith("@") else None,share_percent=shares[idx]))
-    db.commit(); db.refresh(beat); return beat_payload(beat,db)
+def @router.put("/{beat_id}", response_model=BeatOut)
+def update_beat(
+    beat_id: int,
+    data: BeatUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    beat = db.scalar(
+        select(Beat)
+        .outerjoin(BeatProducer, BeatProducer.beat_id == Beat.id)
+        .where(
+            Beat.id == beat_id,
+            or_(
+                Beat.user_id == current_user.id,
+                Beat.messenger_id == current_user.id,
+                BeatProducer.user_id == current_user.id,
+            ),
+        )
+        .distinct()
+    )
 
+    if not beat:
+        raise HTTPException(404, "Beat not found")
+
+    # Только владелец может менять состав продюсеров
+    is_owner = beat.user_id == current_user.id
+
+    if not is_owner:
+        current_producer_usernames = {
+            p.user.username
+            for p in beat.producers
+            if p.user
+        }
+
+        requested_producer = data.producer_username
+
+        requested_co_producers = set(
+            username.strip()
+            for username in (data.co_producer_usernames or [])
+            if username and username.strip()
+        )
+
+        # Проверяем, что основной продюсер не изменился
+        if requested_producer:
+            current_main_producer = db.get(User, beat.user_id)
+
+            if (
+                current_main_producer
+                and requested_producer != current_main_producer.username
+            ):
+                raise HTTPException(
+                    403,
+                    "Only the beat owner can change the main producer",
+                )
+
+        # Проверяем, что состав продюсеров не изменился
+        requested_all_producers = requested_co_producers.copy()
+
+        if requested_producer:
+            requested_all_producers.add(requested_producer)
+
+        if requested_all_producers != current_producer_usernames:
+            raise HTTPException(
+                403,
+                "Only the beat owner can change the producer list",
+            )
+
+    # Обычные данные может менять участник бита
+    beat.name = data.name.strip()
+    beat.bpm = data.bpm
+    beat.musical_key = (
+        data.musical_key.strip()
+        if data.musical_key
+        else None
+    )
+    beat.status = data.status
+
+    # Состав продюсеров изменяет только владелец
+    if is_owner:
+        producer = resolve_user(db, data.producer_username)
+
+        if not producer:
+            raise HTTPException(404, "Producer account not found")
+
+        old_registered_ids = {
+            p.user_id
+            for p in list(beat.producers)
+            if p.user_id
+        }
+
+        users = []
+        external = []
+        seen_ids = set()
+        seen_external = set()
+
+        def add_user(u):
+            if u and u.id not in seen_ids:
+                users.append(u)
+                seen_ids.add(u.id)
+
+        add_user(producer)
+
+        for raw in data.co_producer_usernames or []:
+            raw = (raw or "").strip()
+
+            if not raw:
+                continue
+
+            u = resolve_user(db, raw)
+
+            if u:
+                add_user(u)
+
+            elif key(raw) not in seen_external:
+                external.append(raw)
+                seen_external.add(key(raw))
+
+        shares = pct_list(len(users) + len(external))
+
+        for p in list(beat.producers):
+            db.delete(p)
+
+        for c in list(beat.credits):
+            db.delete(c)
+
+        db.flush()
+
+        for idx, u in enumerate(users):
+            db.add(
+                BeatProducer(
+                    beat_id=beat.id,
+                    user_id=u.id,
+                    share_percent=shares[idx],
+                )
+            )
+
+            if (
+                u.id not in old_registered_ids
+                and u.id != current_user.id
+            ):
+                db.add(
+                    Notification(
+                        user_id=u.id,
+                        type="co_producer_added",
+                        title="You were added to a beat",
+                        message=(
+                            f'{current_user.username} added you to '
+                            f'"{beat.name}". '
+                            f"Your share is {shares[idx]}%."
+                        ),
+                        is_read=False,
+                    )
+                )
+
+        for idx, raw in enumerate(external, start=len(users)):
+            db.add(
+                BeatCredit(
+                    beat_id=beat.id,
+                    user_id=None,
+                    display_name=canonical(raw),
+                    handle=raw if raw.startswith("@") else None,
+                    share_percent=shares[idx],
+                )
+            )
+
+    db.commit()
+    db.refresh(beat)
+
+    return beat_payload(beat, db)
 @router.delete("/{beat_id}")
 def delete_beat(
     beat_id: int,
