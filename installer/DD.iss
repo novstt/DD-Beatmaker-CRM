@@ -5,7 +5,6 @@
 #define MyAppExeName "DD.exe"
 
 [Setup]
-SetupIconFile=..\desktop\icons\dd.ico
 AppId={{D&D-CRM-2026}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
@@ -18,8 +17,7 @@ SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 
 [Files]
-Source: "..\dist\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
-Source: "..\updater\*"; DestDir: "{app}\updater"; Flags: recursesubdirs ignoreversion
+Source: "..\desktop\dist\DD\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
 Name: "{autodesktop}\D&D"; Filename: "{app}\{#MyAppExeName}"

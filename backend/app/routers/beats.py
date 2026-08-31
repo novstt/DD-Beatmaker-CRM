@@ -128,14 +128,15 @@ def create_beat(data:BeatCreate,db:Session=Depends(get_db),current_user:User=Dep
         db.add(BeatCredit(beat_id=beat.id,user_id=None,display_name=canonical(raw),handle=raw if raw.startswith("@") else None,share_percent=shares[idx]))
     db.commit(); db.refresh(beat); return beat_payload(beat,db)
 
-@router.put("/{beat_id}",response_model=BeatOut)
-def @router.put("/{beat_id}", response_model=BeatOut)
+@router.put("/{beat_id}", response_model=BeatOut)
 def update_beat(
     beat_id: int,
     data: BeatUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # A beat is visible/editable to its workspace owner, messenger, or registered
+    # producer. Only the workspace owner may change producer credits.
     beat = db.scalar(
         select(Beat)
         .outerjoin(BeatProducer, BeatProducer.beat_id == Beat.id)
@@ -153,50 +154,9 @@ def update_beat(
     if not beat:
         raise HTTPException(404, "Beat not found")
 
-    # Только владелец может менять состав продюсеров
     is_owner = beat.user_id == current_user.id
 
-    if not is_owner:
-        current_producer_usernames = {
-            p.user.username
-            for p in beat.producers
-            if p.user
-        }
-
-        requested_producer = data.producer_username
-
-        requested_co_producers = set(
-            username.strip()
-            for username in (data.co_producer_usernames or [])
-            if username and username.strip()
-        )
-
-        # Проверяем, что основной продюсер не изменился
-        if requested_producer:
-            current_main_producer = db.get(User, beat.user_id)
-
-            if (
-                current_main_producer
-                and requested_producer != current_main_producer.username
-            ):
-                raise HTTPException(
-                    403,
-                    "Only the beat owner can change the main producer",
-                )
-
-        # Проверяем, что состав продюсеров не изменился
-        requested_all_producers = requested_co_producers.copy()
-
-        if requested_producer:
-            requested_all_producers.add(requested_producer)
-
-        if requested_all_producers != current_producer_usernames:
-            raise HTTPException(
-                403,
-                "Only the beat owner can change the producer list",
-            )
-
-    # Обычные данные может менять участник бита
+    # All authorized participants may update ordinary beat metadata.
     beat.name = data.name.strip()
     beat.bpm = data.bpm
     beat.musical_key = (
@@ -206,10 +166,9 @@ def update_beat(
     )
     beat.status = data.status
 
-    # Состав продюсеров изменяет только владелец
+    # Producer credits and splits may only be changed by the workspace owner.
     if is_owner:
         producer = resolve_user(db, data.producer_username)
-
         if not producer:
             raise HTTPException(404, "Producer account not found")
 
@@ -233,45 +192,42 @@ def update_beat(
 
         for raw in data.co_producer_usernames or []:
             raw = (raw or "").strip()
-
             if not raw:
                 continue
 
-            u = resolve_user(db, raw)
-
-            if u:
-                add_user(u)
-
+            user = resolve_user(db, raw)
+            if user:
+                add_user(user)
             elif key(raw) not in seen_external:
                 external.append(raw)
                 seen_external.add(key(raw))
 
         shares = pct_list(len(users) + len(external))
 
-        for p in list(beat.producers):
-            db.delete(p)
+        for producer_row in list(beat.producers):
+            db.delete(producer_row)
 
-        for c in list(beat.credits):
-            db.delete(c)
+        for credit in list(beat.credits):
+            db.delete(credit)
 
         db.flush()
 
-        for idx, u in enumerate(users):
+        for idx, user in enumerate(users):
             db.add(
                 BeatProducer(
                     beat_id=beat.id,
-                    user_id=u.id,
+                    user_id=user.id,
                     share_percent=shares[idx],
                 )
             )
 
             if (
-                u.id not in old_registered_ids
-                and u.id != current_user.id
+                user.id not in old_registered_ids
+                and user.id != current_user.id
             ):
                 db.add(
                     Notification(
-                        user_id=u.id,
+                        user_id=user.id,
                         type="co_producer_added",
                         title="You were added to a beat",
                         message=(
@@ -294,10 +250,63 @@ def update_beat(
                 )
             )
 
+    else:
+        # Non-owners must never be able to modify producer credits. BeatUpdate
+        # contains the full producer list, so require the submitted registered
+        # producer set to match the existing one exactly.
+        current_registered_ids = {
+            p.user_id
+            for p in beat.producers
+            if p.user_id
+        }
+
+        requested_registered_ids = set()
+
+        if data.producer_username:
+            producer = resolve_user(db, data.producer_username)
+            if not producer:
+                raise HTTPException(404, "Producer account not found")
+            requested_registered_ids.add(producer.id)
+
+        for raw in data.co_producer_usernames or []:
+            raw = (raw or "").strip()
+            if not raw:
+                continue
+
+            user = resolve_user(db, raw)
+            if not user:
+                raise HTTPException(
+                    403,
+                    "Only the beat owner can change the producer list",
+                )
+
+            requested_registered_ids.add(user.id)
+
+        current_external_keys = {
+            key(c.handle or c.display_name)
+            for c in beat.credits
+        }
+
+        requested_external_keys = {
+            key(raw)
+            for raw in (data.co_producer_usernames or [])
+            if raw and raw.strip() and not resolve_user(db, raw)
+        }
+
+        if (
+            requested_registered_ids != current_registered_ids
+            or requested_external_keys != current_external_keys
+        ):
+            raise HTTPException(
+                403,
+                "Only the beat owner can change the producer list",
+            )
+
     db.commit()
     db.refresh(beat)
 
     return beat_payload(beat, db)
+
 @router.delete("/{beat_id}")
 def delete_beat(
     beat_id: int,
@@ -373,3 +382,4 @@ def bulk_update(data:BulkBeatUpdate,db:Session=Depends(get_db),current_user:User
         updated+=1
     db.commit()
     return {"status":"ok","updated":updated}
+

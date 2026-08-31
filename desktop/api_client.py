@@ -24,7 +24,7 @@ class ApiClient:
     def _request(self, method, path, **kwargs):
         response = requests.request(
             method, self.base_url + path,
-            headers=self._headers(), timeout=10, **kwargs
+            headers=self._headers(), timeout=30, **kwargs
         )
         if not response.ok:
             try:

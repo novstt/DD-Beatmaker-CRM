@@ -13,10 +13,20 @@ import app.workspace_models  # register Phase 2 tables
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    print("STARTUP 1: lifespan started", flush=True)
+
+    print("STARTUP 2: create_all starting", flush=True)
     Base.metadata.create_all(bind=engine)
+    print("STARTUP 3: create_all finished", flush=True)
 
     # Lightweight forward migrations for the desktop app.
+    print("STARTUP 4: migrations starting", flush=True)
+
     with engine.begin() as conn:
+        print("STARTUP 5: database connected", flush=True)
+
+        conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS mailing_share_percent NUMERIC(5,2) DEFAULT 0"))
+
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS mailing_share_percent NUMERIC(5,2) DEFAULT 0"))
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS producer_share_percent NUMERIC(5,2) DEFAULT 0"))
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS is_producer BOOLEAN DEFAULT FALSE"))
