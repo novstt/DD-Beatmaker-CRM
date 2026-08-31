@@ -1,9 +1,11 @@
 {
   "version": "1.0.2",
   "channel": "stable",
-  "package_url": "",
-  "sha256": "",
+  "package_url": "https://github.com/novstt/DD-Beatmaker-CRM/releases/download/v1.0.2/DD_1.0.2.zip",
+  "sha256": "cf029bcffb93985d58bb0f71d6690130c8e1726d955bcce62e3eb487c438222b",
   "notes": [
-    "Latest update"
+    "Updated Settings interface",
+    "UI improvements",
+    "General stability improvements"
   ]
 }
