@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
-from api_client import ApiClient
+from desktop.api_client import ApiClient
 
 
 class CompactToast(QFrame):
@@ -2844,7 +2844,7 @@ class MainWindow(QMainWindow):
         content=QWidget(); content.setObjectName("content"); cv=QVBoxLayout(content); cv.setContentsMargins(0,0,0,0); cv.setSpacing(0)
         topbar=QWidget(); topbar.setObjectName("topbar"); top=QHBoxLayout(topbar); top.setContentsMargins(24,12,24,12); swrap=QFrame(); swrap.setObjectName("searchWrap"); sw=QHBoxLayout(swrap); sw.setContentsMargins(10,0,10,0); si=QLabel(); si.setPixmap(ui_icon("search").pixmap(18,18)); sw.addWidget(si); self.search=QLineEdit(); self.search.setPlaceholderText("Search artists, beats, licenses..."); self.search.setFrame(False); self.search.setMinimumHeight(38); sw.addWidget(self.search,1); swrap.setMaximumWidth(640); top.addWidget(swrap); self.search.returnPressed.connect(self.open_search_from_bar); top.addStretch(); self.theme_button=QPushButton(); self.theme_button.setObjectName("iconButton"); self.theme_button.setIcon(ui_icon("sun")); self.theme_button.setIconSize(QSize(19,19)); self.theme_button.setFixedSize(40,40); self.theme_button.clicked.connect(self.toggle_theme); top.addWidget(self.theme_button); self.notify_button=QPushButton(); self.notify_button.setObjectName("iconButton"); self.notify_button.setIcon(ui_icon("notifications")); self.notify_button.setIconSize(QSize(19,19)); self.notify_button.setFixedSize(40,40); self.notify_button.clicked.connect(lambda:self.show_page("Notifications")); top.addWidget(self.notify_button); cv.addWidget(topbar)
         self.stack=QStackedWidget(); self.stack.setObjectName("pageStack")
-        self.sync_timer=QTimer(self); self.sync_timer.setInterval(1000); self.sync_timer.timeout.connect(self.refresh_lightweight); self.sync_timer.start()
+        self.sync_timer=QTimer(self); self.sync_timer.setInterval(30000); self.sync_timer.timeout.connect(self.refresh_lightweight); self.sync_timer.start()
         self.backup_timer=QTimer(self); self.backup_timer.setInterval(10*60*1000); self.backup_timer.timeout.connect(self._auto_backup); self.backup_timer.start()
 
         self.pages={"Home":HomeTab(api),"Artists":ArtistsTab(api),"Beats":BeatsTab(api,self.audio_store),"Licenses":LicensesTab(api),"Stats":StatsTab(api),"Notifications":NotificationsTab(api),"Settings":SettingsTab(api)}
@@ -2968,19 +2968,17 @@ class MainWindow(QMainWindow):
         try:self.api.update_settings(new)
         except Exception:pass
         self.apply_theme(new)
+
     def refresh_lightweight(self):
         try:
+            # Проверяем/обновляем только сессию.
             self.api.refresh_session(clear_cache=False)
-            for cache_key in ("artists", "beats", "licenses"):
-                try: self.api._invalidate(cache_key)
-                except Exception: pass
+
+            # Обновляем только лёгкие данные.
             self.refresh_notification_badge()
-            page=self.stack.currentWidget()
-            if hasattr(page, "refresh"):
-                try: page.refresh()
-                except TypeError: pass
-        except Exception:
-            pass
+
+        except Exception as e:
+            print(f"Lightweight refresh error: {e}")
 
     def _auto_backup(self):
         try:

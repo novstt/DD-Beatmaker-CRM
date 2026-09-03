@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
-from api_client import ApiClient
+from desktop.api_client import ApiClient
 
 
 def time_greeting(name: str) -> str:
@@ -59,7 +59,7 @@ def time_greeting_plain(name: str) -> str:
 try:
     from version import APP_VERSION
 except Exception:
-    APP_VERSION = "1.0.0"
+    APP_VERSION = "1.0.2"
 UPDATE_CONFIG_PATH = Path(__file__).resolve().with_name("update_config.json")
 
 def _update_manifest_url():
@@ -2828,7 +2828,7 @@ class SettingsTab(QWidget):
 
     def _launch_updater(self, manifest_url, package_url, sha256):
         install_dir=_install_root()
-        updater_exe=install_dir/"updater"/"DDUpdater.exe"
+        updater_exe=install_dir/"_internal"/"updater"/"DDUpdater.exe"
         if updater_exe.exists():
             args=[str(updater_exe),"--install-dir",str(install_dir),"--exe","DD.exe","--parent-pid",str(os.getpid())]
             if manifest_url: args += ["--manifest",manifest_url]
@@ -3117,8 +3117,17 @@ class MainWindow(QMainWindow):
         act_new_artist=QAction(self); act_new_artist.setShortcut(QKeySequence("Ctrl+N")); act_new_artist.triggered.connect(lambda:self.pages["Artists"].add_artist()); self.addAction(act_new_artist)
         act_new_beat=QAction(self); act_new_beat.setShortcut(QKeySequence("Ctrl+Shift+B")); act_new_beat.triggered.connect(lambda:self.pages["Beats"].add_beat()); self.addAction(act_new_beat)
         self.tray=QSystemTrayIcon(self); self.tray.setIcon(ui_icon("beats")); self.tray.setToolTip("D&D"); menu=QMenu(self); open_action=menu.addAction("Open D&D"); open_action.triggered.connect(self.showNormal); menu.addSeparator(); quit_action=menu.addAction("Quit D&D"); quit_action.triggered.connect(self.quit_application); self.tray.setContextMenu(menu); self.tray.show()
-        self._allow_close=False
-        self.account_panel=AccountPanel(api,self); self.account_panel.hide(); self.account_panel.actionRequested.connect(self.handle_account_action); self._fade_anim=None; QApplication.instance().installEventFilter(self); self.show_page("Home",False); self.refresh_notification_badge()
+        self._allow_close = False
+        self.account_panel = AccountPanel(api, self)
+        self.account_panel.hide()
+        self.account_panel.actionRequested.connect(self.handle_account_action)
+        self._fade_anim = None
+        QApplication.instance().installEventFilter(self)
+        self.show_page("Home", False)
+        self.refresh_notification_badge()
+
+        QTimer.singleShot(500, self._show_pending_update_notes)
+        QTimer.singleShot(3000, lambda: self.check_updates(silent=True))
     def _show_pending_update_notes(self):
         pending=_take_pending_update()
         if not pending:return
@@ -3303,13 +3312,17 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setStyleSheet(DARK_STYLE)
+
     api = ApiClient()
     auth = AuthWindow(api)
+
     if auth.exec() != QDialog.DialogCode.Accepted:
         return
+
     window = MainWindow(api)
     window.apply_theme((api.user or {}).get("theme", "dark"))
     window.show()
+
     sys.exit(app.exec())
 
 

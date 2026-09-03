@@ -5,7 +5,10 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('icons', 'icons')],
+    datas=[
+    ('icons', 'icons'),
+    ('../updater/dist/DDUpdater.exe', 'updater'),
+],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
