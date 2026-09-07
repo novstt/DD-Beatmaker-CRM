@@ -214,7 +214,7 @@ def export_backup(db:Session=Depends(get_db), current_user:User=Depends(get_curr
     loop_rows=[{'id':x.id,'artist_id':x.artist_id,'source':x.source,'artist_username':x.artist_username,'loop_name':x.loop_name,'audio_filename':x.audio_filename,'audio_path':x.audio_path,'notes':x.notes,'reminder_at':x.reminder_at,'done':x.done} for x in db.scalars(select(LoopSend).where(LoopSend.user_id==current_user.id)).all()]
     np_rows=[{'id':x.id,'artist_id':x.artist_id,'track_name':x.track_name,'audio_filename':x.audio_filename,'audio_path':x.audio_path,'purchase_intent':x.purchase_intent,'uploaded_platform':x.uploaded_platform,'upload_url':x.upload_url,'notes':x.notes} for x in db.scalars(select(NonProfitTrack).where(NonProfitTrack.user_id==current_user.id)).all()]
     mix_rows=[{'id':x.id,'license_id':x.license_id,'mixer_user_id':x.mixer_user_id,'mixer_name':x.mixer_name,'price':str(x.price),'currency':x.currency,'notes':x.notes} for x in db.scalars(select(MixingService).where(MixingService.user_id==current_user.id)).all()]
-    return {'version':'v30','exported_at':datetime.now(timezone.utc),'user':{'username':current_user.username,'email':current_user.email,'currency':current_user.currency,'theme':current_user.theme},'artists':[{'id':a.id,'name':artist.name,'status':a.status,'platform':a.platform,'artist_username':a.artist_username,'notes':a.notes} for a,artist in artists],'beats':beat_rows,'beat_producers':beat_producer_rows,'licenses':[{'id':x.id,'artist_name':artist_name_by_id.get(x.artist_id),'beat_name':beat_name_by_id.get(x.beat_id),'type':x.license_type,'price':str(x.price),'currency':x.currency,'status':x.status,'notes':x.notes,'purchased_at':x.purchased_at,'messenger_id':x.messenger_id,'messenger_name':x.messenger_name} for x in licenses],'license_splits':split_rows,'loop_sends':loop_rows,'non_profit_tracks':np_rows,'mixing':mix_rows}
+    return {'version':'v30','exported_at':datetime.now(timezone.utc),'user':{'username':current_user.username,'email':current_user.email,'currency':current_user.currency,'theme':current_user.theme},'artists':[{'id':a.id,'name':artist.name,'status':a.status,'platform':a.platform,'artist_username':a.artist_username,'notes':a.notes} for a,artist in artists],'beats':beat_rows,'beat_producers':beat_producer_rows,'licenses':[{'id':x.id,'artist_name':artist_name_by_id.get(x.artist_id),'beat_name':beat_name_by_id.get(x.beat_id),'type':x.license_type,'price':str(x.price),'currency':x.currency,'status':x.status,'notes':x.notes,'purchased_at':x.purchased_at,'messenger_id':x.messenger_id,'messenger_name':x.messenger_name,'mailing_share':str(x.mailing_share or 0),'mailing_share_percent':str(x.mailing_share_percent or 0),'producer_share_percent':str(x.producer_share_percent or 0),'is_producer':bool(x.is_producer),'is_messenger':bool(x.is_messenger)} for x in licenses],'license_splits':split_rows,'loop_sends':loop_rows,'non_profit_tracks':np_rows,'mixing':mix_rows}
 
 @router.get('/artists/{artist_id}/score')
 def artist_score(artist_id:int,db:Session=Depends(get_db),current_user:User=Depends(get_current_user)):
@@ -267,6 +267,44 @@ def artist_score(artist_id:int,db:Session=Depends(get_db),current_user:User=Depe
     score=min(100,score)
     category='VIP' if score>=85 and len(paid)>=2 else ('HOT' if score>=70 else ('WARM' if score>=35 else 'COLD'))
     return {'artist_id':artist_id,'score':score,'category':category,'reasons':reasons}
+
+@router.get('/reminders/due')
+def due_reminders(db:Session=Depends(get_db), current_user:User=Depends(get_current_user)):
+    """Return reminders that are due for the current workspace.
+
+    The desktop client polls this lightweight endpoint and keeps a local set of
+    already-notified IDs, so reminders do not require a heavy full-workspace refresh.
+    """
+    now = datetime.now(timezone.utc)
+    followups = list(db.scalars(
+        select(WorkspaceFollowUp).where(
+            WorkspaceFollowUp.user_id == current_user.id,
+            WorkspaceFollowUp.done.is_(False),
+            WorkspaceFollowUp.due_at <= now,
+        ).order_by(WorkspaceFollowUp.due_at.asc()).limit(50)
+    ).all())
+    loops = list(db.scalars(
+        select(LoopSend).where(
+            LoopSend.user_id == current_user.id,
+            LoopSend.done.is_(False),
+            LoopSend.reminder_at.is_not(None),
+            LoopSend.reminder_at <= now,
+        ).order_by(LoopSend.reminder_at.asc()).limit(50)
+    ).all())
+    return {
+        'now': now.isoformat(),
+        'items': [
+            {'key': f'followup:{x.id}', 'kind': 'followup', 'id': x.id,
+             'title': x.title, 'message': x.notes or 'Follow-up is due.',
+             'due_at': x.due_at.isoformat() if x.due_at else None, 'artist_id': x.artist_id}
+            for x in followups
+        ] + [
+            {'key': f'loop:{x.id}', 'kind': 'loop', 'id': x.id,
+             'title': f'Loop follow-up: {x.loop_name}', 'message': x.notes or 'Loop follow-up is due.',
+             'due_at': x.reminder_at.isoformat() if x.reminder_at else None, 'artist_id': x.artist_id}
+            for x in loops
+        ]
+    }
 
 @router.post('/backup/import')
 def import_backup(payload:dict,db:Session=Depends(get_db),current_user:User=Depends(get_current_user)):
@@ -326,7 +364,9 @@ def import_backup(payload:dict,db:Session=Depends(get_db),current_user:User=Depe
         if keyv in existing_keys: imported['licenses_skipped']+=1; continue
         try: price=Decimal(str(row.get('price') or '0'))
         except Exception: imported['licenses_skipped']+=1; continue
-        lic=License(user_id=current_user.id,artist_id=a.id,beat_id=(b.id if b else None),messenger_id=None,messenger_name=row.get('messenger_name'),license_type=str(row.get('type') or 'mp3'),price=price,currency=str(row.get('currency') or current_user.currency),status=str(row.get('status') or 'paid'),notes=row.get('notes'))
+        messenger_name = str(row.get('messenger_name') or '').strip() or None
+        messenger_user = resolve_user(db, messenger_name) if messenger_name else None
+        lic=License(user_id=current_user.id,artist_id=a.id,beat_id=(b.id if b else None),messenger_id=(messenger_user.id if messenger_user else None),messenger_name=(messenger_user.username if messenger_user else messenger_name),license_type=str(row.get('type') or 'mp3'),price=price,currency=str(row.get('currency') or current_user.currency),status=str(row.get('status') or 'paid'),notes=row.get('notes'),mailing_share=Decimal(str(row.get('mailing_share') or '0')),mailing_share_percent=Decimal(str(row.get('mailing_share_percent') or '0')),producer_share_percent=Decimal(str(row.get('producer_share_percent') or '0')),is_producer=bool(row.get('is_producer')),is_messenger=bool(row.get('is_messenger')))
         db.add(lic); db.flush(); existing_keys.add(keyv); license_map[str(row.get('id'))]=lic.id; imported['licenses']+=1
     for srow in payload.get('license_splits') or []:
         local_lid=license_map.get(str(srow.get('license_id')))
@@ -343,7 +383,9 @@ def import_backup(payload:dict,db:Session=Depends(get_db),current_user:User=Depe
     for row in payload.get('mixing') or []:
         lid=license_map.get(str(row.get('license_id')))
         if lid:
-            db.add(MixingService(user_id=current_user.id,license_id=lid,mixer_user_id=row.get('mixer_user_id'),mixer_name=str(row.get('mixer_name') or 'Mixer'),price=Decimal(str(row.get('price') or '0')),currency=str(row.get('currency') or current_user.currency),notes=row.get('notes')))
+            mixer_name=str(row.get('mixer_name') or '').strip() or 'Mixer'
+            mixer_user=resolve_user(db,mixer_name)
+            db.add(MixingService(user_id=current_user.id,license_id=lid,mixer_user_id=(mixer_user.id if mixer_user else None),mixer_name=(mixer_user.username if mixer_user else mixer_name),price=Decimal(str(row.get('price') or '0')),currency=str(row.get('currency') or current_user.currency),notes=row.get('notes')))
     db.commit()
     return {'status':'merged','imported':imported,'policy':'Existing records were preserved; matching records were skipped.'}
 

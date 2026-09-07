@@ -59,7 +59,7 @@ def time_greeting_plain(name: str) -> str:
 try:
     from version import APP_VERSION
 except Exception:
-    APP_VERSION = "1.0.2"
+    APP_VERSION = "1.0.5"
 UPDATE_CONFIG_PATH = Path(__file__).resolve().with_name("update_config.json")
 
 def _update_manifest_url():
@@ -133,14 +133,25 @@ class CompactToast(QFrame):
         QTimer.singleShot(4500,self.close)
 
 
+def _notification_parent(parent=None):
+    # Errors from modal dialogs belong to the main window, not the tiny dialog.
+    if isinstance(parent, QMainWindow):
+        return parent
+    for w in QApplication.topLevelWidgets():
+        if isinstance(w, QMainWindow) and w.isVisible():
+            return w
+    return QApplication.activeWindow() if isinstance(QApplication.activeWindow(), QWidget) else None
+
 def show_toast(title, message, kind="info", parent=None):
-    parent=parent if isinstance(parent,QWidget) else QApplication.activeWindow()
+    parent=_notification_parent(parent)
     toast=CompactToast(parent,title,message,kind)
     if parent:
-        pos=parent.mapToGlobal(parent.rect().topRight())
-        toast.move(pos.x()-toast.width()-18,pos.y()+18)
+        pos=parent.mapToGlobal(parent.rect().bottomRight())
+        toast.move(pos.x()-toast.width()-18,pos.y()-toast.height()-18)
     else:
-        toast.move(40,40)
+        screen=QApplication.primaryScreen()
+        geo=screen.availableGeometry() if screen else QRect(0,0,1280,720)
+        toast.move(geo.right()-toast.width()-18,geo.bottom()-toast.height()-18)
     toast.show(); toast.raise_()
     return toast
 
@@ -168,7 +179,8 @@ except Exception:
 ICON_DIR = Path(__file__).resolve().parent / "icons"
 
 def ui_icon(name):
-    return QIcon(str(ICON_DIR / f"{name}.svg"))
+    path = ICON_DIR / f"{name}.svg"
+    return QIcon(str(path)) if path.is_file() else QIcon()
 
 def _prefs_path():
     appdata = os.environ.get('APPDATA')
@@ -375,7 +387,7 @@ QToolTip { background:#FFFFFF; color:#18202C; border:1px solid #CBD3DF; padding:
 QFrame#statCard { background:#FFFFFF; border:1px solid #DCE2EB; border-radius:15px; }
 QFrame#statCard:hover { border-color:#BDA0D9; background:#FCFBFE; }
 QFrame#sectionCard { background:#FFFFFF; border:1px solid #DCE2EB; border-radius:16px; }
-QFrame#playerBar { background:#FFFFFF; bgit initorder:1px solid #DCE2EB; border-radius:14px; }
+QFrame#playerBar { background:#FFFFFF; border:1px solid #DCE2EB; border-radius:14px; }
 QFrame#beatCard, QFrame#artistCard { background:#FFFFFF; border:1px solid #DCE2EB; border-radius:14px; }
 QFrame#dropZone { background:#F7F4FB; border:1px dashed #A98BC6; border-radius:14px; }
 QFrame#dropZone:hover { background:#F1ECF7; border-color:#813BE6; }
@@ -730,7 +742,7 @@ class AuthWindow(QDialog):
         root.setObjectName("authBackground")
 
         prefs = _load_prefs()
-        self._first_run = not bool(prefs.get("welcome_seen"))
+        self._first_run = (not bool(prefs.get("welcome_seen"))) or (str(prefs.get("welcome_version") or "") != str(APP_VERSION))
 
         preview = PreviewDashboard()
         blur = QGraphicsBlurEffect()
@@ -805,6 +817,7 @@ class AuthWindow(QDialog):
             welcome = WelcomePanel()
             welcome.completed.connect(lambda: (
                 _save_pref("welcome_seen", True),
+                _save_pref("welcome_version", APP_VERSION),
                 root.setCurrentWidget(overlay)
             ))
             root.insertWidget(1, welcome)
@@ -1253,8 +1266,14 @@ class AddBeatDialog(QDialog):
         self.producer.setText(canonical_producer_label((self.api.user or {}).get("username", "")))
         self.status=QComboBox(); self.status.addItem("Available","available"); self.status.addItem("Archived","archived")
         self.co=QLineEdit(); self.co.setPlaceholderText("Optional: @producer, Name, @anotherproducer")
-        form.addRow("Beat name:",self.name); form.addRow("BPM:",self.bpm); form.addRow("Key:",self.key); form.addRow("Producer:",self.producer); form.addRow("Status:",self.status); form.addRow("Co-producers:",self.co)
+        form.addRow("Beat name:",self.name); form.addRow("BPM:",self.bpm); form.addRow("Key:",self.key); form.addRow("Producer:",self.producer)
+        self.producer_status=QLabel("Producer account: checking…"); self.producer_status.setObjectName("mutedLabel"); form.addRow("",self.producer_status)
+        form.addRow("Status:",self.status); form.addRow("Co-producers:",self.co)
+        self.co_status=QLabel("Co-producers: —"); self.co_status.setObjectName("mutedLabel"); form.addRow("",self.co_status)
         root.addLayout(form)
+        self.producer.textChanged.connect(self._check_producer)
+        self.co.textChanged.connect(self._check_co)
+        QTimer.singleShot(50, self._check_producer)
         root.addWidget(QLabel("AUDIO FILE"))
         self.drop=Mp3DropZone(); root.addWidget(self.drop)
         self.drop.fileSelected.connect(self.parse_filename_metadata)
@@ -1263,6 +1282,27 @@ class AddBeatDialog(QDialog):
         self.parse_hint.setWordWrap(True); root.addWidget(self.parse_hint)
         hint=QLabel("Only MP3 is stored locally. Producer/co-producer can be a @username or account email. Registered D&D accounts receive notifications."); hint.setWordWrap(True); hint.setStyleSheet("color:#7F8B9F;"); root.addWidget(hint)
         buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Save|QDialogButtonBox.StandardButton.Cancel); buttons.accepted.connect(self.save); buttons.rejected.connect(self.reject); root.addWidget(buttons)
+
+    def _check_producer(self, text):
+        text=text.strip()
+        if not text:
+            self.producer_status.setText("Producer account: not specified")
+            return
+        try:
+            info=self.api.producer_check(text)
+            if info.get("registered"):
+                self.producer_status.setText(f"✓ Registered in D&D: {info.get('username')}")
+            else:
+                self.producer_status.setText(f"○ External producer: {info.get('display_name')}")
+        except Exception:
+            self.producer_status.setText("○ External / not verified")
+
+    def _check_co(self, text):
+        names=[x.strip() for x in re.split(r"[,;]",text or "") if x.strip()]
+        if not names:
+            self.co_status.setText("Co-producers: —")
+            return
+        self.co_status.setText(f"Co-producers: {len(names)} entered • registration is checked when saved")
 
     def parse_filename_metadata(self, path):
         try:
@@ -1322,6 +1362,27 @@ class EditBeatDialog(QDialog):
         existing=self.audio_store.path_for(beat.get("id")) if self.audio_store else None
         if existing: self.drop.label.setText(f"Current: {existing.name}  •  drop another MP3 to replace")
         buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Save|QDialogButtonBox.StandardButton.Cancel); buttons.accepted.connect(self.save); buttons.rejected.connect(self.reject); root.addWidget(buttons)
+
+    def _check_producer(self, text):
+        text=text.strip()
+        if not text:
+            self.producer_status.setText("Producer account: not specified")
+            return
+        try:
+            info=self.api.producer_check(text)
+            if info.get("registered"):
+                self.producer_status.setText(f"✓ Registered in D&D: {info.get('username')}")
+            else:
+                self.producer_status.setText(f"○ External producer: {info.get('display_name')}")
+        except Exception:
+            self.producer_status.setText("○ External / not verified")
+
+    def _check_co(self, text):
+        names=[x.strip() for x in re.split(r"[,;]",text or "") if x.strip()]
+        if not names:
+            self.co_status.setText("Co-producers: —")
+            return
+        self.co_status.setText(f"Co-producers: {len(names)} entered • registration is checked when saved")
 
     def parse_filename_metadata(self, path):
         try:
@@ -2002,9 +2063,28 @@ class SellLicenseDialog(QDialog):
         self.payment.addItem("Paid","paid"); self.payment.addItem("Pending","pending"); self.payment.addItem("Refunded","refunded")
         for label,code in (("USD","USD"),("EUR","EUR"),("CHF","CHF")): self.currency.addItem(label,code)
         self.price=QDoubleSpinBox(); self.price.setRange(.01,1000000); self.price.setDecimals(2); self.price.setPrefix("$ "); self.price.setSingleStep(5)
-        form.addRow("Artist:",self.artist); form.addRow("Beat:",self.beat); form.addRow("License:",self.type); form.addRow("Price:",self.price); form.addRow("Currency:",self.currency); form.addRow("Payment status:",self.payment); root.addLayout(form)
+        self.messenger=QLineEdit()
+        self.messenger.setPlaceholderText("Optional: @username / email / external name")
+        self.messenger_status=QLabel("Messenger: none • no 10% fee")
+        self.messenger_status.setStyleSheet("color:#8994A8;font-size:11px;")
+        form.addRow("Artist:",self.artist); form.addRow("Beat:",self.beat); form.addRow("License:",self.type); form.addRow("Price:",self.price); form.addRow("Currency:",self.currency); form.addRow("Payment status:",self.payment)
+        form.addRow("Messenger:",self.messenger); form.addRow("",self.messenger_status)
+        root.addLayout(form)
+        self.messenger.textChanged.connect(self._check_messenger); self.messenger.textChanged.connect(self.preview)
         self.currency.currentIndexChanged.connect(self.update_currency_prefix)
         self.role=QLabel("Role: —"); self.split=QLabel("Split: —"); self.role.setStyleSheet("font-weight:700;"); self.split.setStyleSheet("color:#BFA8DD;"); root.addWidget(self.role); root.addWidget(self.split)
+        self.mix_toggle=QPushButton("＋ Add mixing")
+        self.mix_toggle.setCheckable(True)
+        self.mix_toggle.setObjectName("purpleAction")
+        root.addWidget(self.mix_toggle)
+        self.mix_box=QFrame(); self.mix_box.setObjectName("sectionCard"); self.mix_box.hide()
+        mix_form=QFormLayout(self.mix_box)
+        self.mix_mixer=QLineEdit(); self.mix_mixer.setPlaceholderText("@mixer or mixer name")
+        self.mix_price=QDoubleSpinBox(); self.mix_price.setRange(0,1000000); self.mix_price.setDecimals(2)
+        self.mix_currency=QComboBox(); [self.mix_currency.addItem(c,c) for c in ("USD","EUR","CHF")]
+        mix_form.addRow("Mixer:",self.mix_mixer); mix_form.addRow("Mixing price:",self.mix_price); mix_form.addRow("Currency:",self.mix_currency)
+        root.addWidget(self.mix_box)
+        self.mix_toggle.toggled.connect(self.mix_box.setVisible)
         self.notes=QLineEdit(); self.notes.setPlaceholderText("Optional notes"); root.addWidget(self.notes)
         buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Save|QDialogButtonBox.StandardButton.Cancel); buttons.accepted.connect(self.sell); buttons.rejected.connect(self.reject); root.addWidget(buttons)
         self.artist.currentIndexChanged.connect(self.preview); self.beat.currentIndexChanged.connect(self.preview); self.load_data()
@@ -2018,20 +2098,39 @@ class SellLicenseDialog(QDialog):
             if not self.api.beats(""): self.beat.addItem("No beats available",None)
             self.preview()
         except Exception as e: QMessageBox.critical(self,"Could not load data",str(e))
+    def _check_messenger(self, text):
+        text = text.strip()
+        if not text:
+            self.messenger_status.setText("Messenger: none • no 10% fee")
+            return
+        try:
+            info = self.api.producer_check(text)
+            if info.get("registered"):
+                self.messenger_status.setText(f"Messenger: ✓ D&D account ({info.get('username')}) • 10%")
+            else:
+                self.messenger_status.setText(f"Messenger: external ({info.get('display_name')}) • 10%")
+        except Exception:
+            self.messenger_status.setText("Messenger: external/unverified • 10%")
+
     def preview(self):
         bid=self.beat.currentData(); b=next((x for x in self.api.beats("") if x.get("id")==bid),None) if isinstance(bid,int) else None
         if not b: self.role.setText("Role: —"); self.split.setText("Split: —"); return
-        producers=b.get("producers",[]); n=len(producers) or 1; me=(self.api.user or {}).get("id"); mine=any(p.get("user_id")==me for p in producers)
-        if mine:
-            self.role.setText("Role: Producer"); self.split.setText(f"Producer split: {100/n:.2f}% each" if n>1 else "Producer split: 100%")
+        producers=b.get("producers",[]); n=len(producers) or 1
+        messenger=bool(self.messenger.text().strip())
+        self.role.setText("Role: Messenger" if messenger else "Role: Producer / Seller")
+        if messenger:
+            self.split.setText(f"Messenger: 10% • Producers: 90% split across {n} producer(s)")
         else:
-            self.role.setText("Role: Messenger"); self.split.setText(f"Messenger: 10% • Producers: 90% split between {n} producer(s)")
+            self.split.setText(f"Producers: 100% split across {n} producer(s)")
     def sell(self):
         aid=self.artist.currentData(); bid=self.beat.currentData(); price=self.price.value()
         if not isinstance(aid,int) or not isinstance(bid,int): QMessageBox.warning(self,"Missing selection","Select an artist and a beat."); return
         if price<=0: QMessageBox.warning(self,"Invalid price","Enter a price greater than 0."); return
         try:
-            self.api.create_license(aid,bid,self.type.currentData(),price,self.payment.currentData(),self.notes.text().strip(),currency=self.currency.currentData()); self.accept()
+            result=self.api.create_license(aid,bid,self.type.currentData(),price,self.payment.currentData(),self.notes.text().strip(),currency=self.currency.currentData(),messenger_username=self.messenger.text().strip() or None)
+            if self.mix_toggle.isChecked() and self.mix_price.value()>0:
+                self.api.create_mixing(int(result["id"]),self.mix_mixer.text().strip() or None,self.mix_mixer.text().strip() or None,self.mix_price.value(),self.mix_currency.currentData(),self.notes.text().strip())
+            self.accept()
         except Exception as e: QMessageBox.critical(self,"Could not create license",str(e))
 
 
@@ -2116,6 +2215,9 @@ class LicensesTab(QWidget):
         splits=QListWidget(); splits.setMaximumHeight(140); layout.addWidget(splits)
         try:
             split_rows=self.api.license_splits(int(row.get("id")))
+            personal=sum(float(sp.get('amount',0) or 0) for sp in split_rows if sp.get('user_id') == (self.api.user or {}).get('id'))
+            gross=float(row.get('price',0) or 0)
+            info.setText(info.text() + f"\nYour recorded earnings: {row.get('currency','USD')} {personal:,.2f}")
             for sp in split_rows:
                 splits.addItem(f"{sp.get('display_name','-')}  •  {sp.get('role','producer')}  •  {sp.get('percent','0')}%  •  {sp.get('currency','USD')} {sp.get('amount','0')}")
             if not split_rows: splits.addItem("No split snapshot available for this legacy license.")
@@ -2517,7 +2619,7 @@ class HomeTab(QWidget):
             self.chart_value.setText(self._money(month,month_cur)); self.chart_delta.setText((f"{float(delta):+.0f}% vs last month" if delta is not None else "No comparison yet"))
             vals=[]; running=0
             for sale in reversed(data.get("recent_sales",[])):
-                try: running += float(sale.get("price",0) or 0); vals.append(running)
+                try: running += float(sale.get("personal_earnings",0) or 0); vals.append(running)
                 except Exception: pass
             self.chart.set_values(vals)
 
@@ -2530,7 +2632,7 @@ class HomeTab(QWidget):
             self.sales.clear()
             for sale in data.get("recent_sales",[])[:5]:
                 status="Paid" if sale.get("status")=="paid" else "Pending"
-                self.sales.addItem(f"{sale.get('license_type','').upper()}     {sale.get('currency',cur)} {sale.get('price',0)}     • {status}")
+                self.sales.addItem(f"{sale.get('license_type','').upper()}     {sale.get('currency',cur)} {sale.get('price',0)} gross     • You: {sale.get('personal_earnings',0)}     • {status}")
             if not self.sales.count(): self.sales.addItem("No recent sales.")
 
             self.goals.clear()
@@ -2675,9 +2777,9 @@ class SettingsTab(QWidget):
         hint = QLabel("Switch between the dark and light interface."); hint.setObjectName("mutedLabel"); row_text.addWidget(hint)
         row.addLayout(row_text,1)
         self.theme = QComboBox(); self.theme.setMinimumWidth(210)
-        self.theme.addItem("Dark", "dark"); self.theme.addItem("Light", "light")
+        self.theme.addItem("Dark", "dark"); self.theme.addItem("Midnight", "midnight"); self.theme.addItem("OLED Black", "oled"); self.theme.addItem("Light", "light")
         current = (api.user or {}).get("theme", "dark")
-        self.theme.setCurrentIndex(1 if current == "light" else 0)
+        self.theme.setCurrentIndex({"dark":0,"midnight":1,"oled":2,"light":3}.get(current,0))
         self.theme.currentIndexChanged.connect(self.on_theme_changed)
         row.addWidget(self.theme,0,Qt.AlignmentFlag.AlignVCenter)
         av.addLayout(row)
@@ -2727,7 +2829,7 @@ class SettingsTab(QWidget):
         top.addLayout(texts,1); sv.addLayout(top)
         divider = QFrame(); divider.setFrameShape(QFrame.Shape.HLine); divider.setStyleSheet("color:#1B2534;"); sv.addWidget(divider)
         self.auto_backup = QCheckBox("Automatic local backup every 10 minutes")
-        self.auto_backup.setChecked(bool(_load_prefs().get("auto_backup", False)))
+        self.auto_backup.setChecked(bool(_load_prefs().get("auto_backup", True)))
         self.auto_backup.stateChanged.connect(lambda state: _save_pref("auto_backup", bool(state)))
         self.auto_backup.setStyleSheet("font-size:14px;font-weight:650;")
         sv.addWidget(self.auto_backup)
@@ -3069,16 +3171,129 @@ class AccountCard(QFrame):
         super().mousePressEvent(event)
 
 
+
+class SimpleRecordDialog(QDialog):
+    def __init__(self, api, kind, parent=None):
+        super().__init__(parent); self.api=api; self.kind=kind
+        self.setWindowTitle({"loops":"Sent Loop","nonprofit":"Non-Profit Track","mixing":"Mixing"}[kind])
+        self.setMinimumWidth(560)
+        root=QVBoxLayout(self); root.setContentsMargins(22,20,22,18); root.setSpacing(10)
+        title=QLabel({"loops":"SEND / LOG LOOP","nonprofit":"ADD NON-PROFIT TRACK","mixing":"ADD MIXING"}[kind]); title.setStyleSheet("font-size:20px;font-weight:750;"); root.addWidget(title)
+        form=QFormLayout()
+        self.artist=QComboBox()
+        try:
+            for a in api.my_artists(""): self.artist.addItem(a["name"],a["id"])
+        except Exception: pass
+        form.addRow("Artist:",self.artist)
+        if kind=="loops":
+            self.source=QLineEdit(); self.source.setPlaceholderText("Instagram / TikTok / Discord / friend...")
+            self.username=QLineEdit(); self.username.setPlaceholderText("@artist")
+            self.name=QLineEdit(); self.name.setPlaceholderText("Loop name")
+            form.addRow("Found via:",self.source); form.addRow("Artist username:",self.username); form.addRow("Loop:",self.name)
+            self.file=QLineEdit(); browse=QPushButton("Choose MP3"); browse.clicked.connect(lambda:self.choose_file(self.file)); form.addRow("MP3:",self.file)
+            self.reminder=QLineEdit(); self.reminder.setPlaceholderText("YYYY-MM-DD HH:MM (optional)"); form.addRow("Reminder:",self.reminder)
+        elif kind=="nonprofit":
+            self.name=QLineEdit(); self.name.setPlaceholderText("Track / beat name")
+            form.addRow("Track:",self.name)
+            self.file=QLineEdit(); browse=QPushButton("Choose MP3"); browse.clicked.connect(lambda:self.choose_file(self.file)); form.addRow("MP3:",self.file)
+            self.intent=QComboBox(); self.intent.addItem("Not planning to buy","no"); self.intent.addItem("Plans to buy","planned"); self.intent.addItem("Unknown","unknown")
+            self.platform=QLineEdit(); self.platform.setPlaceholderText("YouTube / SoundCloud / TikTok / ...")
+            self.url=QLineEdit(); self.url.setPlaceholderText("Optional upload URL")
+            form.addRow("Purchase intent:",self.intent); form.addRow("Uploaded to:",self.platform); form.addRow("Upload URL:",self.url)
+        else:
+            self.license=QComboBox()
+            try:
+                for lic in api.licenses(): self.license.addItem(f"#{lic['id']} • {lic.get('price')} {lic.get('currency','USD')}",lic["id"])
+            except Exception: pass
+            form.addRow("License:",self.license)
+            self.mixer=QLineEdit(); self.mixer.setPlaceholderText("@mixer / username (optional)")
+            self.price=QDoubleSpinBox(); self.price.setRange(.01,1000000); self.price.setDecimals(2)
+            self.currency=QComboBox(); [self.currency.addItem(c,c) for c in ("USD","EUR","CHF")]
+            self.notes=QLineEdit(); form.addRow("Mixer:",self.mixer); form.addRow("Price:",self.price); form.addRow("Currency:",self.currency); form.addRow("Notes:",self.notes)
+        if kind!="mixing":
+            self.notes=QLineEdit(); self.notes.setPlaceholderText("Optional notes"); form.addRow("Notes:",self.notes)
+        root.addLayout(form)
+        buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Save|QDialogButtonBox.StandardButton.Cancel); buttons.accepted.connect(self.save); buttons.rejected.connect(self.reject); root.addWidget(buttons)
+    def choose_file(self, edit):
+        path,_=QFileDialog.getOpenFileName(self,"Choose MP3","","MP3 files (*.mp3)")
+        if path: edit.setText(path)
+    def save(self):
+        try:
+            aid=self.artist.currentData() if hasattr(self,"artist") else None
+            if self.kind=="loops":
+                if not isinstance(aid,int) or not self.name.text().strip(): raise ValueError("Select an artist and enter a loop name.")
+                path=self.file.text().strip()
+                if path and not path.lower().endswith(".mp3"): raise ValueError("Only MP3 files are allowed.")
+                reminder=None
+                if self.reminder.text().strip():
+                    reminder=self.reminder.text().strip().replace(" ","T")+":00"
+                self.api.create_loop_send(aid,self.source.text(),self.username.text(),self.name.text().strip(),Path(path).name if path else None,path or None,self.notes.text(),reminder)
+            elif self.kind=="nonprofit":
+                if not isinstance(aid,int) or not self.name.text().strip(): raise ValueError("Select an artist and enter a track name.")
+                path=self.file.text().strip()
+                if path and not path.lower().endswith(".mp3"): raise ValueError("Only MP3 files are allowed.")
+                self.api.create_non_profit_track(aid,self.name.text().strip(),Path(path).name if path else None,path or None,self.intent.currentData(),self.platform.text().strip(),self.url.text().strip(),self.notes.text())
+            else:
+                lid=self.license.currentData()
+                if not isinstance(lid,int) or self.price.value()<=0: raise ValueError("Select a license and enter a price.")
+                self.api.create_mixing(lid,self.mixer.text().strip() or None,None,self.price.value(),self.currency.currentData(),self.notes.text())
+            self.accept()
+        except Exception as e: QMessageBox.warning(self,"Could not save",str(e))
+
+class LoopSendsTab(QWidget):
+    def __init__(self,api): super().__init__(); self.api=api; self.root=QVBoxLayout(self); self.build()
+    def build(self):
+        h=QHBoxLayout(); title=QLabel("Sent Loops"); title.setObjectName("title"); h.addWidget(title); h.addStretch(); b=QPushButton("+ Add Loop"); b.setObjectName("primary"); b.clicked.connect(self.add); h.addWidget(b); self.root.addLayout(h); self.list=QListWidget(); self.root.addWidget(self.list); self.refresh()
+    def refresh(self):
+        self.list.clear()
+        try:
+            artists={a["id"]:a["name"] for a in self.api.my_artists("")}
+            for x in self.api.loop_sends():
+                text=f"{'✓' if x.get('done') else '•'} {x.get('loop_name')}  •  {artists.get(x.get('artist_id'), 'Artist')}  •  {x.get('source') or '—'}"
+                if x.get("reminder_at"): text+=f"  •  reminder {str(x['reminder_at'])[:16]}"
+                it=QListWidgetItem(text); it.setData(Qt.ItemDataRole.UserRole,x); self.list.addItem(it)
+        except Exception as e:self.list.addItem(f"Could not load: {e}")
+    def add(self):
+        if SimpleRecordDialog(self.api,"loops",self).exec()==QDialog.DialogCode.Accepted:self.refresh()
+
+class NonProfitTracksTab(QWidget):
+    def __init__(self,api): super().__init__(); self.api=api; self.root=QVBoxLayout(self); self.build()
+    def build(self):
+        h=QHBoxLayout(); title=QLabel("Non-Profit Tracks"); title.setObjectName("title"); h.addWidget(title); h.addStretch(); b=QPushButton("+ Add Track"); b.setObjectName("primary"); b.clicked.connect(self.add); h.addWidget(b); self.root.addLayout(h); self.list=QListWidget(); self.root.addWidget(self.list); self.refresh()
+    def refresh(self):
+        self.list.clear()
+        try:
+            artists={a["id"]:a["name"] for a in self.api.my_artists("")}
+            labels={"no":"Not planning to buy","planned":"Plans to buy","unknown":"Unknown"}
+            for x in self.api.non_profit_tracks():
+                self.list.addItem(f"{x.get('track_name')}  •  {artists.get(x.get('artist_id'),'Artist')}  •  {labels.get(x.get('purchase_intent'),'Unknown')}  •  {x.get('uploaded_platform') or 'Not uploaded'}")
+        except Exception as e:self.list.addItem(f"Could not load: {e}")
+    def add(self):
+        if SimpleRecordDialog(self.api,"nonprofit",self).exec()==QDialog.DialogCode.Accepted:self.refresh()
+
+class MixingTab(QWidget):
+    def __init__(self,api): super().__init__(); self.api=api; self.root=QVBoxLayout(self); self.build()
+    def build(self):
+        h=QHBoxLayout(); title=QLabel("Mixing"); title.setObjectName("title"); h.addWidget(title); h.addStretch(); b=QPushButton("+ Add Mixing"); b.setObjectName("primary"); b.clicked.connect(self.add); h.addWidget(b); self.root.addLayout(h); self.list=QListWidget(); self.root.addWidget(self.list); self.refresh()
+    def refresh(self):
+        self.list.clear()
+        try:
+            for x in self.api.mixing_services():
+                self.list.addItem(f"License #{x.get('license_id')}  •  {x.get('mixer_name')}  •  {x.get('currency','USD')} {x.get('price')}  •  100% mixer")
+        except Exception as e:self.list.addItem(f"Could not load: {e}")
+    def add(self):
+        if SimpleRecordDialog(self.api,"mixing",self).exec()==QDialog.DialogCode.Accepted:self.refresh()
+
 class MainWindow(QMainWindow):
     def __init__(self, api):
         super().__init__(); self.api=api; self.setWindowTitle("D&D"); self.resize(1520,960); self.setMinimumSize(1280,820)
         self.audio_store=BeatAudioStore()
         root=QWidget(); root.setObjectName("appRoot"); layout=QHBoxLayout(root); layout.setContentsMargins(0,0,0,0); layout.setSpacing(0)
         sidebar=QWidget(); sidebar.setObjectName("sidebar"); sidebar.setFixedWidth(252); side=QVBoxLayout(sidebar); side.setContentsMargins(14,18,14,16); side.setSpacing(4)
-        brandrow=QHBoxLayout(); brandrow.setSpacing(10); logo=QLabel(); logo.setPixmap(ui_icon("beats").pixmap(22,22)); logo.setFixedSize(40,40); logo.setAlignment(Qt.AlignmentFlag.AlignCenter); logo.setStyleSheet("background:#24133C;border:1px solid #543278;border-radius:12px;"); brandrow.addWidget(logo); brandcol=QVBoxLayout(); brandcol.setSpacing(0); brand=QLabel("D&D"); brand.setObjectName("brand"); brandcol.addWidget(brand); brand_sub=QLabel("BEATMAKER CRM"); brand_sub.setStyleSheet("color:#727C8D;font-size:8px;font-weight:800;letter-spacing:1px;"); brandcol.addWidget(brand_sub); brandrow.addLayout(brandcol); brandrow.addStretch(); side.addLayout(brandrow); side.addSpacing(10)
+        brandrow=QHBoxLayout(); brandrow.setSpacing(10); logo=QLabel(); logo.setPixmap(ui_icon("beats").pixmap(22,22)); logo.setFixedSize(40,40); logo.setAlignment(Qt.AlignmentFlag.AlignCenter); logo.setStyleSheet("background:#24133C;border:1px solid #543278;border-radius:12px;"); brandrow.addWidget(logo); brandcol=QVBoxLayout(); brandcol.setSpacing(0); brand=QLabel("D&D"); brand.setObjectName("brand"); brandcol.addWidget(brand); brand_sub=QLabel(f"BEATMAKER CRM  •  v{APP_VERSION}"); brand_sub.setStyleSheet("color:#727C8D;font-size:8px;font-weight:800;letter-spacing:1px;"); brandcol.addWidget(brand_sub); brandrow.addLayout(brandcol); brandrow.addStretch(); side.addLayout(brandrow); side.addSpacing(10)
         work_label=QLabel("WORKSPACE"); work_label.setObjectName("sectionLabel"); side.addWidget(work_label)
         self.nav_buttons=[]
-        for icon,name in [("home","Dashboard"),("artists","Artists"),("beats","Beats"),("licenses","Licenses"),("stats","Stats"),("notifications","Notifications")]:
+        for icon,name in [("home","Dashboard"),("artists","Artists"),("beats","Beats"),("licenses","Licenses"),("stats","Stats"),("notifications","Notifications"),("loops","Sent Loops"),("nonprofit","Non-Profit"),("mixing","Mixing")]:
             page_name="Home" if name=="Dashboard" else name
             b=QPushButton(name); b.setObjectName("nav"); b.setCheckable(True); b.setIcon(ui_icon(icon)); b.setIconSize(QSize(19,19)); b.setMinimumHeight(43); b.clicked.connect(lambda checked=False,n=page_name:self.show_page(n)); side.addWidget(b); self.nav_buttons.append((page_name,b))
         system_label=QLabel("SYSTEM"); system_label.setObjectName("sectionLabel"); side.addSpacing(8); side.addWidget(system_label)
@@ -3091,10 +3306,12 @@ class MainWindow(QMainWindow):
         content=QWidget(); content.setObjectName("content"); cv=QVBoxLayout(content); cv.setContentsMargins(0,0,0,0); cv.setSpacing(0)
         topbar=QWidget(); topbar.setObjectName("topbar"); top=QHBoxLayout(topbar); top.setContentsMargins(24,12,24,12); swrap=QFrame(); swrap.setObjectName("searchWrap"); sw=QHBoxLayout(swrap); sw.setContentsMargins(10,0,10,0); si=QLabel(); si.setPixmap(ui_icon("search").pixmap(18,18)); sw.addWidget(si); self.search=QLineEdit(); self.search.setPlaceholderText("Search artists, beats, licenses..."); self.search.setFrame(False); self.search.setMinimumHeight(38); sw.addWidget(self.search,1); swrap.setMaximumWidth(640); top.addWidget(swrap); self.search.returnPressed.connect(self.open_search_from_bar); top.addStretch(); self.theme_button=QPushButton(); self.theme_button.setObjectName("iconButton"); self.theme_button.setIcon(ui_icon("sun")); self.theme_button.setIconSize(QSize(19,19)); self.theme_button.setFixedSize(40,40); self.theme_button.clicked.connect(self.toggle_theme); top.addWidget(self.theme_button); self.notify_button=QPushButton(); self.notify_button.setObjectName("iconButton"); self.notify_button.setIcon(ui_icon("notifications")); self.notify_button.setIconSize(QSize(19,19)); self.notify_button.setFixedSize(40,40); self.notify_button.clicked.connect(lambda:self.show_page("Notifications")); top.addWidget(self.notify_button); cv.addWidget(topbar)
         self.stack=QStackedWidget(); self.stack.setObjectName("pageStack")
-        self.sync_timer=QTimer(self); self.sync_timer.setInterval(30000); self.sync_timer.timeout.connect(self.refresh_lightweight); self.sync_timer.start()
+        self.sync_timer=QTimer(self); self.sync_timer.setInterval(120000); self.sync_timer.timeout.connect(self.refresh_lightweight); self.sync_timer.start()
         self.backup_timer=QTimer(self); self.backup_timer.setInterval(10*60*1000); self.backup_timer.timeout.connect(self._auto_backup); self.backup_timer.start()
+        self._seen_reminders=set()
+        self.reminder_timer=QTimer(self); self.reminder_timer.setInterval(60*1000); self.reminder_timer.timeout.connect(self._poll_reminders); self.reminder_timer.start()
 
-        self.pages={"Home":HomeTab(api),"Artists":ArtistsTab(api),"Beats":BeatsTab(api,self.audio_store),"Licenses":LicensesTab(api),"Stats":StatsTab(api),"Notifications":NotificationsTab(api),"Settings":SettingsTab(api)}
+        self.pages={"Home":HomeTab(api),"Artists":ArtistsTab(api),"Beats":BeatsTab(api,self.audio_store),"Licenses":LicensesTab(api),"Stats":StatsTab(api),"Notifications":NotificationsTab(api),"Sent Loops":LoopSendsTab(api),"Non-Profit":NonProfitTracksTab(api),"Mixing":MixingTab(api),"Settings":SettingsTab(api)}
         self.pages["Beats"].nowPlaying.connect(self.update_player_bar)
         if (api.user or {}).get("email", "").casefold()=="quikinnnproducer@gmail.com": self.pages["Admin"]=AdminTab(api)
         self.pages["Settings"].themeChanged.connect(self.apply_theme)
@@ -3127,6 +3344,7 @@ class MainWindow(QMainWindow):
         self.refresh_notification_badge()
 
         QTimer.singleShot(500, self._show_pending_update_notes)
+        QTimer.singleShot(5000, self._auto_backup)
         QTimer.singleShot(3000, lambda: self.check_updates(silent=True))
     def _show_pending_update_notes(self):
         pending=_take_pending_update()
@@ -3202,50 +3420,73 @@ class MainWindow(QMainWindow):
             rows=self.api.unread_notifications()
             self.notify_button.setText(str(len(rows)) if rows else "")
             current_ids={n.get("id") for n in rows if n.get("id") is not None}
+            initialized=getattr(self,"_notifications_initialized",False)
             previous=getattr(self,"_known_unread_ids",set())
-            new_rows=[n for n in rows if n.get("id") not in previous]
+            new_rows=[] if not initialized else [n for n in rows if n.get("id") not in previous]
             self._known_unread_ids=current_ids
+            self._notifications_initialized=True
             for n in new_rows:
                 title=n.get("title") or "D&D Notification"
                 message=n.get("message") or "You have a new notification."
                 preview=message.splitlines()[0]
                 if len(preview)>140: preview=preview[:140].rstrip()+"…"
                 if hasattr(self,"tray") and self.tray.isVisible():
-                    pass  # Windows tray balloons intentionally disabled
+                    try:
+                        self.tray.showMessage(title, preview, QSystemTrayIcon.MessageIcon.Information, 5000)
+                    except Exception:
+                        pass
             notif_page=self.pages.get("Notifications") if hasattr(self,"pages") else None
             if notif_page and getattr(self.stack,"currentWidget",lambda:None)() is notif_page and new_rows:
                 notif_page.reload()
         except Exception:
             self.notify_button.setText("")
     def apply_theme(self,theme):
-        theme="light" if str(theme).lower()=="light" else "dark"; QApplication.instance().setStyleSheet((LIGHT_STYLE + FINAL_LIGHT_OVERRIDES) if theme=="light" else DARK_STYLE)
+        theme=str(theme or "dark").lower()
+        styles={"dark":DARK_STYLE,"midnight":MIDNIGHT_STYLE,"oled":OLED_STYLE,"light":LIGHT_STYLE + FINAL_LIGHT_OVERRIDES}
+        if theme not in styles: theme="dark"
+        QApplication.instance().setStyleSheet(styles[theme])
         if self.api.user is not None:self.api.user["theme"]=theme
         settings=self.pages.get("Settings")
         if settings:
-            settings.theme.blockSignals(True); settings.theme.setCurrentIndex(1 if theme=="light" else 0); settings.theme.blockSignals(False)
+            settings.theme.blockSignals(True); settings.theme.setCurrentIndex({"dark":0,"midnight":1,"oled":2,"light":3}.get(theme,0)); settings.theme.blockSignals(False)
         self.theme_button.setIcon(ui_icon("moon" if theme=="light" else "sun"))
     def toggle_theme(self):
-        current=(self.api.user or {}).get("theme","dark").lower(); new="light" if current=="dark" else "dark"
+        # Cycle through every available theme from the top-bar button.
+        order=["dark","midnight","oled","light"]
+        current=(self.api.user or {}).get("theme","dark").lower()
+        try:
+            new=order[(order.index(current)+1)%len(order)]
+        except ValueError:
+            new="dark"
         try:self.api.update_settings(new)
         except Exception:pass
         self.apply_theme(new)
     def refresh_lightweight(self):
+        # Lightweight background sync: do not invalidate all caches or repaint
+        # the active page every tick. Pages refresh on navigation/manual refresh.
         try:
-            self.api.refresh_session(clear_cache=False)
-            for cache_key in ("artists", "beats", "licenses"):
-                try: self.api._invalidate(cache_key)
-                except Exception: pass
             self.refresh_notification_badge()
-            page=self.stack.currentWidget()
-            if hasattr(page, "refresh"):
-                try: page.refresh()
-                except TypeError: pass
+        except Exception:
+            pass
+
+    def _poll_reminders(self):
+        try:
+            data=self.api.due_reminders() or {}
+            for item in data.get('items') or []:
+                key=str(item.get('key') or f"{item.get('kind')}:{item.get('id')}")
+                if key in self._seen_reminders:
+                    continue
+                self._seen_reminders.add(key)
+                if hasattr(self, 'tray') and self.tray.isVisible():
+                    self.tray.showMessage(str(item.get('title') or 'D&D Reminder'), str(item.get('message') or 'Reminder is due.'), QSystemTrayIcon.MessageIcon.Information, 7000)
+                else:
+                    show_toast(str(item.get('title') or 'D&D Reminder'), str(item.get('message') or 'Reminder is due.'), parent=self)
         except Exception:
             pass
 
     def _auto_backup(self):
         try:
-            if not bool(_load_prefs().get("auto_backup", False)):
+            if not bool(_load_prefs().get("auto_backup", True)):
                 return
             data=self.api.export_backup()
             backup_dir=Path(_prefs_path()).parent / "backups"
@@ -3299,6 +3540,20 @@ QSlider#playerProgress { min-height:16px; }
 QSlider#playerProgress::groove:horizontal { height:4px; background:#252E3D; border-radius:2px; }
 QSlider#playerProgress::sub-page:horizontal { background:#9B5CFF; border-radius:2px; }
 QSlider#playerProgress::handle:horizontal { width:12px; margin:-4px 0; background:#D7B6FF; border-radius:6px; }
+
+MIDNIGHT_STYLE = DARK_STYLE + """
+QWidget { background:#0B0D12; color:#F5F7FB; }
+QWidget#content { background:#0B0D12; }
+QFrame#sidebar, QWidget#sidebar { background:#090B10; }
+QWidget#topbar { background:#0B0D12; }
+"""
+
+OLED_STYLE = DARK_STYLE + """
+QWidget { background:#000000; }
+QWidget#content, QWidget#topbar { background:#000000; }
+QFrame#sidebar, QWidget#sidebar { background:#000000; }
+QFrame#sectionCard, QFrame#statCard, QFrame#beatCard, QFrame#artistCard { background:#050505; border-color:#202020; }
+"""
 
 FINAL_LIGHT_OVERRIDES = """
 QWidget#content { background:#F4F6FA; }

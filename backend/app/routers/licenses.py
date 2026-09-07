@@ -182,6 +182,13 @@ def create_license(data:LicenseCreate,db:Session=Depends(get_db),current_user:Us
     snap={"license_id":row.id,"artist_id":row.artist_id,"beat_id":row.beat_id,"license_type":row.license_type,"price":str(row.price),"currency":row.currency,"status":row.status,"mailing_share_percent":str(row.mailing_share_percent),"producer_share_percent":str(row.producer_share_percent),"messenger_id":row.messenger_id,"messenger_name":row.messenger_name,"is_producer":row.is_producer,"is_messenger":row.is_messenger,"notes":row.notes}
     db.add(LicenseVersion(license_id=row.id,version_no=1,snapshot_json=json.dumps(snap,ensure_ascii=False)))
 
+    # Financial invariant: the immutable snapshot must always balance exactly.
+    total_percent = sum((item['share_percent'] for item in calculated), Decimal('0.00'))
+    total_amount = sum((item['amount'] for item in calculated), Decimal('0.00'))
+    if total_percent != Decimal('100.00') or total_amount != Decimal(str(data.price)):
+        db.rollback()
+        raise HTTPException(500, 'Financial split invariant failed; sale was not saved')
+
     # Notify every registered producer about paid sales with their exact immutable split.
     if data.status == "paid":
         for uid,label,pct,amount in producer_splits:

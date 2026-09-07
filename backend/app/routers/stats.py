@@ -171,26 +171,18 @@ def dashboard(
         target = producer_earnings_by_currency if split.role == 'producer' else messenger_earnings_by_currency
         target[sale.currency] = target.get(sale.currency, Decimal('0')) + Decimal(str(split.amount))
 
-    recent_sales = [
-        {
-            "id": x.id,
-            "artist_id": x.artist_id,
-            "beat_id": x.beat_id,
-            "license_type": x.license_type,
-            "price": str(x.price),
-            "currency": x.currency,
-            "status": x.status,
-            "is_producer": x.is_producer,
-            "is_messenger": x.is_messenger,
-            "producer_share_percent": str(x.producer_share_percent),
-            "mailing_share_percent": str(x.mailing_share_percent),
-            "purchased_at": (
-                x.purchased_at.isoformat()
-                if x.purchased_at else None
-            ),
-        }
-        for x in recent
-    ]
+    recent_sales = []
+    for x in recent:
+        personal = sum((Decimal(str(split.amount)) for split, sale in paid_split_rows if sale.id == x.id), Decimal('0.00'))
+        recent_sales.append({
+            'id': x.id, 'artist_id': x.artist_id, 'beat_id': x.beat_id,
+            'license_type': x.license_type, 'price': str(x.price), 'currency': x.currency,
+            'status': x.status, 'is_producer': x.is_producer, 'is_messenger': x.is_messenger,
+            'producer_share_percent': str(x.producer_share_percent),
+            'mailing_share_percent': str(x.mailing_share_percent),
+            'personal_earnings': str(personal),
+            'purchased_at': x.purchased_at.isoformat() if x.purchased_at else None,
+        })
 
     # Analytics extras: contacted-to-buyer conversion and revenue delta vs the prior period.
     contacted_artists = db.scalar(select(func.count(func.distinct(UserArtist.artist_id))).where(UserArtist.user_id==current_user.id)) or 0

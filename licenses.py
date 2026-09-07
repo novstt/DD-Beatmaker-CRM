@@ -57,7 +57,11 @@ def create_license(data:LicenseCreate,db:Session=Depends(get_db),current_user:Us
     # Any registered producer may record a sale for a beat. Sending history belongs to the
     # seller, but must not block another co-producer from recording the same shared beat.
     producers=participant_rows(beat,db) if beat else []
-    producer_ids={p[0] for p in producers if p[0]}
+    producer_ids = {
+        p["user_id"]
+        for p in producers
+        if p["user_id"] is not None
+    }
     seller_is_producer=current_user.id in producer_ids
     messenger_pct=D("0") if seller_is_producer or not beat else D("10")
     remaining=D("100")-messenger_pct

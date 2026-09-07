@@ -118,6 +118,9 @@ class ApiClient:
         self._invalidate("artists")
         return artist
 
+    def producer_check(self, username):
+        return self._request("GET", "/api/beats/producer-check", params={"username": username})
+
     def create_beat(self, name, bpm, musical_key, status, producer_username=None, co_producer_usernames=None):
         result=self._request("POST","/api/beats",json={"name":name,"bpm":bpm,"musical_key":musical_key,"status":status,"producer_username":producer_username,"co_producer_usernames":co_producer_usernames or []})
         self._invalidate("beats"); return result
@@ -179,7 +182,7 @@ class ApiClient:
         self._invalidate("licenses")
         return result
 
-    def create_license(self, artist_id, beat_id, license_type, price, status="paid", notes="", is_producer=False, is_messenger=False, producer_share_percent=0, mailing_share_percent=0, currency="USD"):
+    def create_license(self, artist_id, beat_id, license_type, price, status="paid", notes="", is_producer=False, is_messenger=False, producer_share_percent=0, mailing_share_percent=0, currency="USD", messenger_username=None):
         result = self._request(
             "POST",
             "/api/licenses",
@@ -191,10 +194,36 @@ class ApiClient:
                 "currency": currency,
                 "status": status,
                 "notes": notes or None,
+                "messenger_username": messenger_username or None,
             },
         )
         self._invalidate("licenses")
         return result
+
+    def loop_sends(self):
+        return self._request("GET", "/api/workspace/loop-sends")
+
+    def create_loop_send(self, artist_id, source, artist_username, loop_name, audio_filename=None, audio_path=None, notes="", reminder_at=None):
+        result=self._request("POST","/api/workspace/loop-sends",json={"artist_id":artist_id,"source":source or None,"artist_username":artist_username or None,"loop_name":loop_name,"audio_filename":audio_filename,"audio_path":audio_path,"notes":notes or None,"reminder_at":reminder_at})
+        return result
+
+    def done_loop_send(self, item_id):
+        return self._request("POST", f"/api/workspace/loop-sends/{item_id}/done")
+
+    def non_profit_tracks(self):
+        return self._request("GET", "/api/workspace/non-profit-tracks")
+
+    def create_non_profit_track(self, artist_id, track_name, audio_filename=None, audio_path=None, purchase_intent="unknown", uploaded_platform=None, upload_url=None, notes=""):
+        return self._request("POST","/api/workspace/non-profit-tracks",json={"artist_id":artist_id,"track_name":track_name,"audio_filename":audio_filename,"audio_path":audio_path,"purchase_intent":purchase_intent,"uploaded_platform":uploaded_platform,"upload_url":upload_url,"notes":notes or None})
+
+    def mixing_services(self):
+        return self._request("GET", "/api/workspace/mixing")
+
+    def create_mixing(self, license_id, mixer_username=None, mixer_name=None, price=0, currency="USD", notes=""):
+        return self._request("POST","/api/workspace/mixing",json={"license_id":license_id,"mixer_username":mixer_username or None,"mixer_name":mixer_name or None,"price":price,"currency":currency,"notes":notes or None})
+
+    def due_reminders(self):
+        return self._request("GET", "/api/workspace/reminders/due")
 
     def workspace_overview(self):
         return self._request("GET", "/api/workspace/overview")
