@@ -95,28 +95,63 @@ def list_beats(search:str=Query(default=""),limit:int=Query(default=100,ge=1,le=
     stmt=select(Beat).outerjoin(BeatProducer, BeatProducer.beat_id==Beat.id).where(or_(Beat.user_id==current_user.id,Beat.messenger_id==current_user.id,BeatProducer.user_id==current_user.id)).distinct().order_by(Beat.created_at.desc()).offset(offset).limit(limit)
     if search.strip(): stmt=stmt.where(Beat.name.ilike(f"%{search.strip()}%"))
     return [beat_payload(b,db) for b in db.scalars(stmt).all()]
+@router.get("/producer-check")
+def producer_check(username: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    raw = (username or "").strip()
+    if not raw:
+        return {"registered": False, "username": "", "display_name": ""}
+    user = resolve_user(db, raw)
+    return {
+        "registered": bool(user),
+        "user_id": user.id if user else None,
+        "username": user.username if user else raw.lstrip("@"),
+        "display_name": canonical(user.username) if user else canonical(raw),
+    }
+
 @router.post("",response_model=BeatOut,status_code=201)
 def create_beat(data:BeatCreate,db:Session=Depends(get_db),current_user:User=Depends(get_current_user)):
     # The creator owns the CRM record, but is NOT automatically a producer.
     # Only names explicitly entered in Producer / Co-producers receive credits
     # and revenue shares. This prevents the current account from silently
     # becoming a co-producer or messenger.
-    producer=resolve_user(db,data.producer_username)
-    if not producer:
-        raise HTTPException(404,"Producer account not found")
-    users=[]; external=[]; seen_ids=set(); seen_external=set()
-    def add_user(u):
-        if u and u.id not in seen_ids:
-            users.append(u); seen_ids.add(u.id)
-    add_user(producer)
-    for raw in data.co_producer_usernames:
-        raw=(raw or '').strip()
-        if not raw: continue
-        u=resolve_user(db,raw)
-        if u: add_user(u)
-        elif key(raw) not in seen_external:
-            external.append(raw); seen_external.add(key(raw))
-    shares=pct_list(len(users)+len(external))
+    producer = resolve_user(db, data.producer_username)
+
+    users = []
+    external = []
+    seen_ids = set()
+    seen_external = set()
+
+    def add_user(user):
+        if user and user.id not in seen_ids:
+            users.append(user)
+            seen_ids.add(user.id)
+
+    def add_external(raw):
+        raw = (raw or "").strip()
+
+        if raw and key(raw) not in seen_external:
+            external.append(raw)
+            seen_external.add(key(raw))
+
+    if producer:
+        add_user(producer)
+    else:
+        add_external(data.producer_username)
+
+    for raw in data.co_producer_usernames or []:
+        raw = (raw or "").strip()
+
+        if not raw:
+            continue
+
+        u = resolve_user(db, raw)
+
+        if u:
+            add_user(u)
+        else:
+            add_external(raw)
+
+    shares = pct_list(len(users) + len(external))
     # user_id is the workspace owner/creator, not a producer credit.
     beat=Beat(user_id=current_user.id,messenger_id=None,name=data.name.strip(),bpm=data.bpm,musical_key=data.musical_key.strip() if data.musical_key else None,status=data.status)
     db.add(beat); db.flush()
@@ -169,8 +204,6 @@ def update_beat(
     # Producer credits and splits may only be changed by the workspace owner.
     if is_owner:
         producer = resolve_user(db, data.producer_username)
-        if not producer:
-            raise HTTPException(404, "Producer account not found")
 
         old_registered_ids = {
             p.user_id
@@ -188,8 +221,17 @@ def update_beat(
                 users.append(u)
                 seen_ids.add(u.id)
 
-        add_user(producer)
+        def add_external(raw):
+            raw = (raw or "").strip()
 
+            if raw and key(raw) not in seen_external:
+                external.append(raw)
+                seen_external.add(key(raw))
+
+        if producer:
+            add_user(producer)
+        else:
+            add_external(data.producer_username)
         for raw in data.co_producer_usernames or []:
             raw = (raw or "").strip()
             if not raw:

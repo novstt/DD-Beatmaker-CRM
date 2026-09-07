@@ -152,6 +152,7 @@ class BeatSendCreate(BaseModel):
 class LicenseCreate(BaseModel):
     artist_id: int
     beat_id: int | None = None
+    messenger_username: str | None = None
     license_type: str
     price: Decimal
     currency: str = "USD"
@@ -176,6 +177,8 @@ class LicenseOut(BaseModel):
     producer_share_percent: Decimal = Decimal("0")
     is_producer: bool = False
     is_messenger: bool = False
+    messenger_id: int | None = None
+    messenger_name: str | None = None
     notes: str | None
 
 
@@ -227,3 +230,36 @@ class NotificationOut(BaseModel):
     message: str
     is_read: bool
     created_at: datetime
+
+
+# =========================
+# CRM EXTENSIONS
+# =========================
+
+class LoopSendCreate(BaseModel):
+    artist_id: int
+    source: str | None = None
+    artist_username: str | None = None
+    loop_name: str = Field(min_length=1, max_length=150)
+    audio_filename: str | None = None
+    audio_path: str | None = None
+    notes: str | None = None
+    reminder_at: datetime | None = None
+
+class NonProfitTrackCreate(BaseModel):
+    artist_id: int
+    track_name: str = Field(min_length=1, max_length=150)
+    audio_filename: str | None = None
+    audio_path: str | None = None
+    purchase_intent: str = "unknown"
+    uploaded_platform: str | None = None
+    upload_url: str | None = None
+    notes: str | None = None
+
+class MixingServiceCreate(BaseModel):
+    license_id: int
+    mixer_username: str | None = None
+    mixer_name: str | None = None
+    price: Decimal
+    currency: str = "USD"
+    notes: str | None = None

@@ -6,8 +6,9 @@ from sqlalchemy import delete, select, func
 from sqlalchemy.orm import Session
 from app.auth import get_current_user
 from app.database import get_db
-from app.models import User, UserArtist, Artist, Beat, License, LicenseSplit, BeatSend
+from app.models import User, UserArtist, Artist, Beat, License, LicenseSplit, BeatSend, BeatProducer, BeatCredit, LoopSend, NonProfitTrack, MixingService
 from app.workspace_models import WorkspaceFavorite, WorkspaceFollowUp, WorkspaceGoal, WorkspaceTag
+from app.schemas import LoopSendCreate, NonProfitTrackCreate, MixingServiceCreate
 
 router=APIRouter()
 
@@ -199,7 +200,21 @@ def export_backup(db:Session=Depends(get_db), current_user:User=Depends(get_curr
         beat_rows.append({'id':b.id,'name':b.name,'bpm':b.bpm,'musical_key':b.musical_key,'status':b.status,'producer_username':(db.get(User,b.user_id).username if b.user_id else None),'messenger_username':(db.get(User,b.messenger_id).username if b.messenger_id else None)})
     artist_name_by_id={artist.id:artist.name for link,artist in artists}
     beat_name_by_id={b.id:b.name for b in beats}
-    return {'version':'v27','exported_at':datetime.now(timezone.utc),'user':{'username':current_user.username,'email':current_user.email,'currency':current_user.currency,'theme':current_user.theme},'artists':[{'id':a.id,'name':artist.name,'status':a.status,'platform':a.platform,'artist_username':a.artist_username,'notes':a.notes} for a,artist in artists],'beats':beat_rows,'licenses':[{'id':x.id,'artist_name':artist_name_by_id.get(x.artist_id),'beat_name':beat_name_by_id.get(x.beat_id),'type':x.license_type,'price':str(x.price),'currency':x.currency,'status':x.status,'notes':x.notes,'purchased_at':x.purchased_at} for x in licenses]}
+    beat_producer_rows=[]
+    for b in beats:
+        for p in db.scalars(select(BeatProducer).where(BeatProducer.beat_id==b.id)).all():
+            u=db.get(User,p.user_id)
+            beat_producer_rows.append({'beat_id':b.id,'username':u.username if u else None,'share_percent':str(p.share_percent)})
+        for c in db.scalars(select(BeatCredit).where(BeatCredit.beat_id==b.id)).all():
+            beat_producer_rows.append({'beat_id':b.id,'username':c.display_name,'user_id':None,'share_percent':str(c.share_percent)})
+    split_rows=[]
+    for lic in licenses:
+        for s in db.scalars(select(LicenseSplit).where(LicenseSplit.license_id==lic.id)).all():
+            split_rows.append({'license_id':lic.id,'user_id':s.user_id,'display_name':s.display_name,'role':s.role,'percent':str(s.percent),'amount':str(s.amount),'currency':s.currency})
+    loop_rows=[{'id':x.id,'artist_id':x.artist_id,'source':x.source,'artist_username':x.artist_username,'loop_name':x.loop_name,'audio_filename':x.audio_filename,'audio_path':x.audio_path,'notes':x.notes,'reminder_at':x.reminder_at,'done':x.done} for x in db.scalars(select(LoopSend).where(LoopSend.user_id==current_user.id)).all()]
+    np_rows=[{'id':x.id,'artist_id':x.artist_id,'track_name':x.track_name,'audio_filename':x.audio_filename,'audio_path':x.audio_path,'purchase_intent':x.purchase_intent,'uploaded_platform':x.uploaded_platform,'upload_url':x.upload_url,'notes':x.notes} for x in db.scalars(select(NonProfitTrack).where(NonProfitTrack.user_id==current_user.id)).all()]
+    mix_rows=[{'id':x.id,'license_id':x.license_id,'mixer_user_id':x.mixer_user_id,'mixer_name':x.mixer_name,'price':str(x.price),'currency':x.currency,'notes':x.notes} for x in db.scalars(select(MixingService).where(MixingService.user_id==current_user.id)).all()]
+    return {'version':'v30','exported_at':datetime.now(timezone.utc),'user':{'username':current_user.username,'email':current_user.email,'currency':current_user.currency,'theme':current_user.theme},'artists':[{'id':a.id,'name':artist.name,'status':a.status,'platform':a.platform,'artist_username':a.artist_username,'notes':a.notes} for a,artist in artists],'beats':beat_rows,'beat_producers':beat_producer_rows,'licenses':[{'id':x.id,'artist_name':artist_name_by_id.get(x.artist_id),'beat_name':beat_name_by_id.get(x.beat_id),'type':x.license_type,'price':str(x.price),'currency':x.currency,'status':x.status,'notes':x.notes,'purchased_at':x.purchased_at,'messenger_id':x.messenger_id,'messenger_name':x.messenger_name} for x in licenses],'license_splits':split_rows,'loop_sends':loop_rows,'non_profit_tracks':np_rows,'mixing':mix_rows}
 
 @router.get('/artists/{artist_id}/score')
 def artist_score(artist_id:int,db:Session=Depends(get_db),current_user:User=Depends(get_current_user)):
@@ -281,8 +296,25 @@ def import_backup(payload:dict,db:Session=Depends(get_db),current_user:User=Depe
             db.add(b); db.flush(); existing_beats[norm]=b; imported['beats']+=1
         beat_map[str(row.get('id'))]=b.id
     db.flush()
+    # Restore producer credits using the source beat id -> local beat id map.
+    from app.routers.beats import resolve_user, canonical
+    for row in payload.get('beat_producers') or []:
+        local_beat_id=beat_map.get(str(row.get('beat_id')))
+        if not local_beat_id: continue
+        name=str(row.get('username') or '').strip()
+        if not name: continue
+        user=resolve_user(db,name)
+        share=Decimal(str(row.get('share_percent') or '0'))
+        if user:
+            exists=db.scalar(select(BeatProducer).where(BeatProducer.beat_id==local_beat_id,BeatProducer.user_id==user.id))
+            if not exists: db.add(BeatProducer(beat_id=local_beat_id,user_id=user.id,share_percent=share))
+        else:
+            exists=db.scalar(select(BeatCredit).where(BeatCredit.beat_id==local_beat_id,BeatCredit.user_id.is_(None),BeatCredit.display_name.ilike(canonical(name))))
+            if not exists: db.add(BeatCredit(beat_id=local_beat_id,user_id=None,display_name=canonical(name),handle=name if name.startswith('@') else None,share_percent=share))
+    db.flush()
     # License merge uses artist/beat names, preventing ID collisions between databases.
     existing_keys=set()
+    license_map={}
     for x in db.scalars(select(License).where(License.user_id==current_user.id)).all():
         existing_keys.add((x.artist_id,x.beat_id,x.license_type,str(x.price),x.currency,x.status))
     for row in payload.get('licenses') or []:
@@ -294,8 +326,24 @@ def import_backup(payload:dict,db:Session=Depends(get_db),current_user:User=Depe
         if keyv in existing_keys: imported['licenses_skipped']+=1; continue
         try: price=Decimal(str(row.get('price') or '0'))
         except Exception: imported['licenses_skipped']+=1; continue
-        lic=License(user_id=current_user.id,artist_id=a.id,beat_id=(b.id if b else None),license_type=str(row.get('type') or 'mp3'),price=price,currency=str(row.get('currency') or current_user.currency),status=str(row.get('status') or 'paid'),notes=row.get('notes'))
-        db.add(lic); existing_keys.add(keyv); imported['licenses']+=1
+        lic=License(user_id=current_user.id,artist_id=a.id,beat_id=(b.id if b else None),messenger_id=None,messenger_name=row.get('messenger_name'),license_type=str(row.get('type') or 'mp3'),price=price,currency=str(row.get('currency') or current_user.currency),status=str(row.get('status') or 'paid'),notes=row.get('notes'))
+        db.add(lic); db.flush(); existing_keys.add(keyv); license_map[str(row.get('id'))]=lic.id; imported['licenses']+=1
+    for srow in payload.get('license_splits') or []:
+        local_lid=license_map.get(str(srow.get('license_id')))
+        if not local_lid: continue
+        split_name=str(srow.get('display_name') or 'Unknown').strip(); split_user=resolve_user(db,split_name) if split_name else None; db.add(LicenseSplit(license_id=local_lid,user_id=split_user.id if split_user else None,display_name=split_name,role=str(srow.get('role') or 'producer'),percent=Decimal(str(srow.get('percent') or '0')),amount=Decimal(str(srow.get('amount') or '0')),currency=str(srow.get('currency') or current_user.currency)))
+    for row in payload.get('loop_sends') or []:
+        aid=artist_map.get(str(row.get('artist_id')))
+        if aid:
+            db.add(LoopSend(user_id=current_user.id,artist_id=aid,source=row.get('source'),artist_username=row.get('artist_username'),loop_name=str(row.get('loop_name') or 'Loop'),audio_filename=row.get('audio_filename'),audio_path=row.get('audio_path'),notes=row.get('notes'),reminder_at=row.get('reminder_at'),done=bool(row.get('done'))))
+    for row in payload.get('non_profit_tracks') or []:
+        aid=artist_map.get(str(row.get('artist_id')))
+        if aid:
+            db.add(NonProfitTrack(user_id=current_user.id,artist_id=aid,track_name=str(row.get('track_name') or 'Track'),audio_filename=row.get('audio_filename'),audio_path=row.get('audio_path'),purchase_intent=str(row.get('purchase_intent') or 'unknown'),uploaded_platform=row.get('uploaded_platform'),upload_url=row.get('upload_url'),notes=row.get('notes')))
+    for row in payload.get('mixing') or []:
+        lid=license_map.get(str(row.get('license_id')))
+        if lid:
+            db.add(MixingService(user_id=current_user.id,license_id=lid,mixer_user_id=row.get('mixer_user_id'),mixer_name=str(row.get('mixer_name') or 'Mixer'),price=Decimal(str(row.get('price') or '0')),currency=str(row.get('currency') or current_user.currency),notes=row.get('notes')))
     db.commit()
     return {'status':'merged','imported':imported,'policy':'Existing records were preserved; matching records were skipped.'}
 
@@ -346,3 +394,66 @@ def clear_all_account_data(db:Session=Depends(get_db), current_user:User=Depends
                 db.execute(delete(Artist).where(Artist.id==aid))
     db.commit()
     return {'status':'ok'}
+
+
+# =========================
+# CRM EXTENSIONS
+# =========================
+
+def _artist_link(db, user_id, artist_id):
+    return db.scalar(select(UserArtist).where(
+        UserArtist.user_id == user_id,
+        UserArtist.artist_id == artist_id,
+        UserArtist.status != 'archived',
+    ))
+
+@router.get('/loop-sends')
+def list_loop_sends(db:Session=Depends(get_db), current_user:User=Depends(get_current_user)):
+    rows=db.scalars(select(LoopSend).where(LoopSend.user_id==current_user.id).order_by(LoopSend.created_at.desc())).all()
+    return [{'id':x.id,'artist_id':x.artist_id,'source':x.source,'artist_username':x.artist_username,'loop_name':x.loop_name,'audio_filename':x.audio_filename,'audio_path':x.audio_path,'notes':x.notes,'reminder_at':x.reminder_at,'done':x.done,'created_at':x.created_at} for x in rows]
+
+@router.post('/loop-sends')
+def create_loop_send(data:LoopSendCreate,db:Session=Depends(get_db), current_user:User=Depends(get_current_user)):
+    if not _artist_link(db,current_user.id,data.artist_id): raise HTTPException(404,'Artist not found in your list')
+    row=LoopSend(user_id=current_user.id,artist_id=data.artist_id,source=data.source,artist_username=data.artist_username,loop_name=data.loop_name.strip(),audio_filename=data.audio_filename,audio_path=data.audio_path,notes=data.notes,reminder_at=data.reminder_at)
+    db.add(row); db.commit(); db.refresh(row)
+    return {'id':row.id,'artist_id':row.artist_id,'source':row.source,'artist_username':row.artist_username,'loop_name':row.loop_name,'audio_filename':row.audio_filename,'audio_path':row.audio_path,'notes':row.notes,'reminder_at':row.reminder_at,'done':row.done,'created_at':row.created_at}
+
+@router.post('/loop-sends/{item_id}/done')
+def done_loop_send(item_id:int,db:Session=Depends(get_db), current_user:User=Depends(get_current_user)):
+    row=db.scalar(select(LoopSend).where(LoopSend.id==item_id,LoopSend.user_id==current_user.id))
+    if not row: raise HTTPException(404,'Loop send not found')
+    row.done=True; db.commit(); return {'status':'ok'}
+
+@router.get('/non-profit-tracks')
+def list_non_profit(db:Session=Depends(get_db), current_user:User=Depends(get_current_user)):
+    rows=db.scalars(select(NonProfitTrack).where(NonProfitTrack.user_id==current_user.id).order_by(NonProfitTrack.created_at.desc())).all()
+    return [{'id':x.id,'artist_id':x.artist_id,'track_name':x.track_name,'audio_filename':x.audio_filename,'audio_path':x.audio_path,'purchase_intent':x.purchase_intent,'uploaded_platform':x.uploaded_platform,'upload_url':x.upload_url,'notes':x.notes,'created_at':x.created_at} for x in rows]
+
+@router.post('/non-profit-tracks')
+def create_non_profit(data:NonProfitTrackCreate,db:Session=Depends(get_db), current_user:User=Depends(get_current_user)):
+    if not _artist_link(db,current_user.id,data.artist_id): raise HTTPException(404,'Artist not found in your list')
+    if data.purchase_intent not in {'unknown','no','planned'}: raise HTTPException(422,'Invalid purchase intent')
+    row=NonProfitTrack(user_id=current_user.id,artist_id=data.artist_id,track_name=data.track_name.strip(),audio_filename=data.audio_filename,audio_path=data.audio_path,purchase_intent=data.purchase_intent,uploaded_platform=data.uploaded_platform,upload_url=data.upload_url,notes=data.notes)
+    db.add(row); db.commit(); db.refresh(row)
+    return {'id':row.id,'artist_id':row.artist_id,'track_name':row.track_name,'audio_filename':row.audio_filename,'audio_path':row.audio_path,'purchase_intent':row.purchase_intent,'uploaded_platform':row.uploaded_platform,'upload_url':row.upload_url,'notes':row.notes,'created_at':row.created_at}
+
+@router.get('/mixing')
+def list_mixing(db:Session=Depends(get_db), current_user:User=Depends(get_current_user)):
+    rows=db.scalars(select(MixingService).where(MixingService.user_id==current_user.id).order_by(MixingService.created_at.desc())).all()
+    return [{'id':x.id,'license_id':x.license_id,'mixer_user_id':x.mixer_user_id,'mixer_name':x.mixer_name,'price':str(x.price),'currency':x.currency,'notes':x.notes,'created_at':x.created_at} for x in rows]
+
+@router.post('/mixing')
+def create_mixing(data:MixingServiceCreate,db:Session=Depends(get_db), current_user:User=Depends(get_current_user)):
+    if data.price <= 0: raise HTTPException(422,'Mixing price must be greater than 0')
+    lic=db.scalar(select(License).where(License.id==data.license_id, License.user_id==current_user.id))
+    if not lic: raise HTTPException(404,'License not found')
+    currency=(data.currency or lic.currency).upper()
+    if currency not in {'USD','EUR','CHF'}: raise HTTPException(422,'Unsupported currency')
+    mixer=None
+    if data.mixer_username:
+        mixer=db.scalar(select(User).where(User.username.ilike(data.mixer_username.lstrip('@').strip())))
+    name=(mixer.username if mixer else (data.mixer_name or data.mixer_username or current_user.username)).strip()
+    row=MixingService(user_id=current_user.id,license_id=data.license_id,mixer_user_id=mixer.id if mixer else None,mixer_name=name,price=data.price,currency=currency,notes=data.notes)
+    db.add(row); db.commit(); db.refresh(row)
+    return {'id':row.id,'license_id':row.license_id,'mixer_user_id':row.mixer_user_id,'mixer_name':row.mixer_name,'price':str(row.price),'currency':row.currency,'notes':row.notes,'created_at':row.created_at}

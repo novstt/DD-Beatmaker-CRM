@@ -33,7 +33,7 @@ def login(data:LoginIn,db:Session=Depends(get_db)):
 def me(current_user=Depends(get_current_user)): return current_user
 @router.put("/settings",response_model=UserOut)
 def settings(data:UserSettingsUpdate,db:Session=Depends(get_db),current_user=Depends(get_current_user)):
-    if data.theme and data.theme not in {"dark","light"}: raise HTTPException(422,"Invalid theme")
+    if data.theme and data.theme not in {"dark","midnight","oled","light"}: raise HTTPException(422,"Invalid theme")
     if data.currency and data.currency not in {"USD","EUR","CHF"}: raise HTTPException(422,"Invalid currency")
     if data.theme: current_user.theme=data.theme
     if data.currency: current_user.currency=data.currency

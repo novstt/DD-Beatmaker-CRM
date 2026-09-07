@@ -144,6 +144,8 @@ class Beat(Base):
     price: Mapped[Decimal] = mapped_column(Numeric(10, 2), default=0)
     status: Mapped[str] = mapped_column(String(30), default="available")
     google_drive_link: Mapped[str | None] = mapped_column(String(1000))
+    audio_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    audio_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
@@ -252,6 +254,8 @@ class License(Base):
         ForeignKey("beats.id", ondelete="SET NULL"),
         nullable=True,
     )
+    messenger_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    messenger_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
 
     license_type: Mapped[str] = mapped_column(String(50))
     price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
@@ -267,7 +271,8 @@ class License(Base):
     is_messenger: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text)
 
-    user = relationship("User", back_populates="licenses")
+    user = relationship("User", back_populates="licenses", foreign_keys=[user_id])
+    messenger = relationship("User", foreign_keys=[messenger_id])
     artist = relationship("Artist", back_populates="licenses")
     beat = relationship("Beat", back_populates="licenses")
 
@@ -315,3 +320,45 @@ class Notification(Base):
     )
 
     user = relationship("User", back_populates="notifications")
+
+
+class LoopSend(Base):
+    __tablename__ = "loop_sends"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"))
+    source: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    artist_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    loop_name: Mapped[str] = mapped_column(String(150))
+    audio_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    audio_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    reminder_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    done: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+class NonProfitTrack(Base):
+    __tablename__ = "non_profit_tracks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    artist_id: Mapped[int] = mapped_column(ForeignKey("artists.id", ondelete="CASCADE"))
+    track_name: Mapped[str] = mapped_column(String(150))
+    audio_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    audio_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    purchase_intent: Mapped[str] = mapped_column(String(30), default="unknown")
+    uploaded_platform: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    upload_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+class MixingService(Base):
+    __tablename__ = "mixing_services"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    license_id: Mapped[int] = mapped_column(ForeignKey("licenses.id", ondelete="CASCADE"))
+    mixer_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    mixer_name: Mapped[str] = mapped_column(String(150))
+    price: Mapped[Decimal] = mapped_column(Numeric(12,2))
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -10,26 +10,70 @@ from app.models import Artist,Beat,BeatCredit,BeatProducer,License,LicenseEvent,
 from app.workspace_models import LicenseVersion
 from app.schemas import LicenseCreate,LicenseOut
 from app.license_logic import calculate_splits
+from app.routers.beats import resolve_user, canonical
 router=APIRouter()
 LICENSE_TYPES={"mp3":"MP3","wav":"WAV","trackout":"Trackout","exclusive":"Exclusive","custom":"Beat under commission"}
 D=Decimal
-def participant_rows(beat,db):
-    # Only explicit BeatProducer / BeatCredit entries are producers.
-    # The account that created the CRM record is NOT automatically entitled
-    # to producer revenue. If that account sells the license without being
-    # listed here, it is treated as the messenger at the license stage.
-    rows=[]; seen=set()
-    registered=list(db.scalars(select(BeatProducer).where(BeatProducer.beat_id==beat.id).order_by(BeatProducer.id)).all())
-    for p in registered:
-        u=db.get(User,p.user_id)
-        if u and u.id not in seen:
-            rows.append((u.id,u.username)); seen.add(u.id)
-    for c in db.scalars(select(BeatCredit).where(BeatCredit.beat_id==beat.id).order_by(BeatCredit.id)).all():
-        if c.user_id and c.user_id in seen:
+def participant_rows(beat, db):
+    rows = []
+    seen_user_ids = set()
+    seen_external_names = set()
+
+    registered = list(
+        db.scalars(
+            select(BeatProducer)
+            .where(BeatProducer.beat_id == beat.id)
+            .order_by(BeatProducer.id)
+        ).all()
+    )
+
+    for producer in registered:
+        user = db.get(User, producer.user_id)
+
+        if not user or user.id in seen_user_ids:
             continue
-        rows.append((c.user_id,c.display_name))
-        if c.user_id:
-            seen.add(c.user_id)
+
+        rows.append({
+            "user_id": user.id,
+            "display_name": user.username,
+            "share_percent": producer.share_percent,
+        })
+
+        seen_user_ids.add(user.id)
+
+    credits = list(
+        db.scalars(
+            select(BeatCredit)
+            .where(BeatCredit.beat_id == beat.id)
+            .order_by(BeatCredit.id)
+        ).all()
+    )
+
+    for credit in credits:
+        if credit.user_id and credit.user_id in seen_user_ids:
+            continue
+
+        display_name = (
+            credit.display_name or "External Producer"
+        ).strip()
+
+        if credit.user_id is None:
+            key = display_name.lower()
+
+            if key in seen_external_names:
+                continue
+
+            seen_external_names.add(key)
+
+        rows.append({
+            "user_id": credit.user_id,
+            "display_name": display_name,
+            "share_percent": credit.share_percent,
+        })
+
+        if credit.user_id:
+            seen_user_ids.add(credit.user_id)
+
     return rows
 def split_percent(n,i):
     if n<=0:return D("0")
@@ -58,24 +102,59 @@ def create_license(data:LicenseCreate,db:Session=Depends(get_db),current_user:Us
     # Any registered producer may record a sale for a beat. Sending history belongs to the
     # seller, but must not block another co-producer from recording the same shared beat.
     producers=participant_rows(beat,db) if beat else []
-    producer_ids={p[0] for p in producers if p[0]}
-    seller_is_producer=current_user.id in producer_ids
-    messenger_pct=D("0") if seller_is_producer or not beat else D("10")
-    remaining=D("100")-messenger_pct
+    producer_ids = {
+        producer["user_id"]
+        for producer in producers
+        if producer["user_id"] is not None
+    }
+    seller_is_producer = current_user.id in producer_ids
+
+    # Messenger is chosen for this sale only. It is deliberately not stored on
+    # the beat, because the same beat may be sold by different people.
+    messenger = None
+    messenger_name = None
+    messenger_id = None
+    if beat and data.messenger_username:
+        raw_messenger = str(data.messenger_username).strip()
+        if raw_messenger:
+            messenger_user = resolve_user(db, raw_messenger)
+            messenger_id = messenger_user.id if messenger_user else None
+            messenger_name = messenger_user.username if messenger_user else canonical(raw_messenger)
+            messenger = {"user_id": messenger_id, "display_name": messenger_name}
+
     purchased=datetime.now(timezone.utc)
-    row=License(user_id=current_user.id,artist_id=data.artist_id,beat_id=data.beat_id,license_type=data.license_type,price=data.price,currency=currency,status=data.status,mailing_share=(data.price*messenger_pct/D("100")).quantize(D("0.01")),mailing_share_percent=messenger_pct,producer_share_percent=(D("100") if len(producers)==1 else D("0")),is_producer=seller_is_producer,is_messenger=(bool(beat) and not seller_is_producer),notes=data.notes,purchased_at=purchased)
+    row=License(
+        user_id=current_user.id,
+        artist_id=data.artist_id,
+        beat_id=data.beat_id,
+        messenger_id=messenger_id,
+        messenger_name=messenger_name,
+        license_type=data.license_type,
+        price=data.price,
+        currency=currency,
+        status=data.status,
+        mailing_share=D("0"),
+        mailing_share_percent=D("0"),
+        producer_share_percent=D("0"),
+        is_producer=seller_is_producer,
+        is_messenger=bool(messenger),
+        notes=data.notes,
+        purchased_at=purchased,
+    )
     db.add(row); db.flush()
-    snap={"license_id":row.id,"artist_id":row.artist_id,"beat_id":row.beat_id,"license_type":row.license_type,"price":str(row.price),"currency":row.currency,"status":row.status,"mailing_share_percent":str(row.mailing_share_percent),"producer_share_percent":str(row.producer_share_percent),"is_producer":row.is_producer,"is_messenger":row.is_messenger,"notes":row.notes}
-    db.add(LicenseVersion(license_id=row.id,version_no=1,snapshot_json=json.dumps(snap,ensure_ascii=False)))
     db.add(LicenseEvent(license_id=row.id,event_type="created",new_status=row.status,note="License created"))
     # Immutable split snapshot for this sale. Only registered producer credits
     # participate in financial distribution. External BeatCredit rows remain display-only.
-    split_inputs = [{"user_id": uid, "display_name": label} for uid, label in producers if uid]
+    split_inputs = producers
+
     if not split_inputs:
         db.rollback()
-        raise HTTPException(400, "This beat has no registered producer credits")
 
-    calculated = calculate_splits(data.price, split_inputs, current_user.id)
+        raise HTTPException(
+            400,
+            "This beat has no producer credits"
+        )
+    calculated = calculate_splits(data.price, split_inputs, current_user.id, messenger=messenger)
     producer_splits = []
     for item in calculated:
         db.add(LicenseSplit(
@@ -93,6 +172,15 @@ def create_license(data:LicenseCreate,db:Session=Depends(get_db),current_user:Us
     messenger_split = next((item for item in calculated if item["role"] == "messenger"), None)
     messenger_amount = messenger_split["amount"] if messenger_split else Decimal("0.00")
     messenger_pct = messenger_split["share_percent"] if messenger_split else Decimal("0.00")
+    producer_total_pct = sum((item["share_percent"] for item in calculated if item["role"] == "producer"), Decimal("0.00"))
+
+    # Keep the summary fields synchronized with the immutable split snapshot.
+    row.mailing_share = messenger_amount
+    row.mailing_share_percent = messenger_pct
+    row.producer_share_percent = producer_total_pct
+
+    snap={"license_id":row.id,"artist_id":row.artist_id,"beat_id":row.beat_id,"license_type":row.license_type,"price":str(row.price),"currency":row.currency,"status":row.status,"mailing_share_percent":str(row.mailing_share_percent),"producer_share_percent":str(row.producer_share_percent),"messenger_id":row.messenger_id,"messenger_name":row.messenger_name,"is_producer":row.is_producer,"is_messenger":row.is_messenger,"notes":row.notes}
+    db.add(LicenseVersion(license_id=row.id,version_no=1,snapshot_json=json.dumps(snap,ensure_ascii=False)))
 
     # Notify every registered producer about paid sales with their exact immutable split.
     if data.status == "paid":
