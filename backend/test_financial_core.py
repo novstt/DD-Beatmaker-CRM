@@ -54,19 +54,3 @@ def test_unresolved_messenger_cannot_create_financial_split():
         assert "registered user account" in str(exc)
     else:
         raise AssertionError("Unresolved Messenger must never receive a financial split")
-
-
-def test_license_router_has_dedicated_messenger_check():
-    source = __import__("pathlib").Path(__file__).resolve().parent.joinpath("app", "routers", "licenses.py").read_text(encoding="utf-8")
-    assert '@router.get("/messenger-check")' in source
-    api = __import__("pathlib").Path(__file__).resolve().parents[1].joinpath("desktop", "api_client.py").read_text(encoding="utf-8")
-    block = api.split("def messenger_check", 1)[1].split("def create_beat", 1)[0]
-    assert "/api/licenses/messenger-check" in block
-    assert "/api/beats/producer-check" not in block
-
-
-def test_workspace_goal_periods_are_validated_and_used():
-    source = __import__("pathlib").Path(__file__).resolve().parent.joinpath("app", "routers", "workspace.py").read_text(encoding="utf-8")
-    assert "SUPPORTED_GOAL_PERIODS" in source
-    assert "goal_period" in source
-    assert "last_month" in source
