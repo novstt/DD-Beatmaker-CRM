@@ -1,0 +1,13 @@
+{
+    "version":  "1.0.8",
+    "channel":  "stable",
+    "package_url":  "https://github.com/novstt/DD-Beatmaker-CRM/releases/download/v1.0.8/DD_Beatmaker_CRM_1.0.8.zip",
+    "sha256":  "c15c78268683056bacb4b0fd610862ca6f49263464d082bbe9f979e99e913184",
+    "notes":  [
+                  "Finance \u0026 Payments: stable revenue split and messenger earnings",
+                  "Statistics: accurate personal revenue and multi-currency display",
+                  "User Experience: dynamic greeting and reliability fixes"
+              ]
+}
+
+
