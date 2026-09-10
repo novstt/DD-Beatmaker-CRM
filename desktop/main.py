@@ -2064,7 +2064,7 @@ class SellLicenseDialog(QDialog):
         for label,code in (("USD","USD"),("EUR","EUR"),("CHF","CHF")): self.currency.addItem(label,code)
         self.price=QDoubleSpinBox(); self.price.setRange(.01,1000000); self.price.setDecimals(2); self.price.setPrefix("$ "); self.price.setSingleStep(5)
         self.messenger=QLineEdit()
-        self.messenger.setPlaceholderText("Optional: @username / email / external name")
+        self.messenger.setPlaceholderText("Optional: @username / email (registered account only)")
         self.messenger_status=QLabel("Messenger: none • no 10% fee")
         self.messenger_status.setStyleSheet("color:#8994A8;font-size:11px;")
         form.addRow("Artist:",self.artist); form.addRow("Beat:",self.beat); form.addRow("License:",self.type); form.addRow("Price:",self.price); form.addRow("Currency:",self.currency); form.addRow("Payment status:",self.payment)
@@ -2108,9 +2108,9 @@ class SellLicenseDialog(QDialog):
             if info.get("registered"):
                 self.messenger_status.setText(f"Messenger: ✓ D&D account ({info.get('username')}) • 10%")
             else:
-                self.messenger_status.setText(f"Messenger: external ({info.get('display_name')}) • 10%")
+                self.messenger_status.setText("Messenger: ✕ account not found — sale will be blocked")
         except Exception:
-            self.messenger_status.setText("Messenger: external/unverified • 10%")
+            self.messenger_status.setText("Messenger: ✕ could not verify account")
 
     def preview(self):
         bid=self.beat.currentData(); b=next((x for x in self.api.beats("") if x.get("id")==bid),None) if isinstance(bid,int) else None
@@ -2127,7 +2127,19 @@ class SellLicenseDialog(QDialog):
         if not isinstance(aid,int) or not isinstance(bid,int): QMessageBox.warning(self,"Missing selection","Select an artist and a beat."); return
         if price<=0: QMessageBox.warning(self,"Invalid price","Enter a price greater than 0."); return
         try:
-            result=self.api.create_license(aid,bid,self.type.currentData(),price,self.payment.currentData(),self.notes.text().strip(),currency=self.currency.currentData(),messenger_username=self.messenger.text().strip() or None)
+            messenger_name = self.messenger.text().strip()
+            if messenger_name:
+                info = self.api.messenger_check(messenger_name)
+                if not info.get("registered") or not info.get("user_id"):
+                    QMessageBox.warning(
+                        self,
+                        "Messenger not found",
+                        f'Messenger account "{messenger_name}" was not found.\n\n'
+                        "Use a registered D&D account. The sale was not created.",
+                    )
+                    return
+
+            result=self.api.create_license(aid,bid,self.type.currentData(),price,self.payment.currentData(),self.notes.text().strip(),currency=self.currency.currentData(),messenger_username=messenger_name or None)
             if self.mix_toggle.isChecked() and self.mix_price.value()>0:
                 self.api.create_mixing(int(result["id"]),self.mix_mixer.text().strip() or None,self.mix_mixer.text().strip() or None,self.mix_price.value(),self.mix_currency.currentData(),self.notes.text().strip())
             self.accept()
@@ -2209,15 +2221,18 @@ class LicensesTab(QWidget):
         artist_name=artists.get(row.get("artist_id"),f"Artist #{row.get('artist_id')}"); beat_id=row.get("beat_id"); beat_name=beats.get(beat_id,f"Beat #{beat_id}") if beat_id else "Beat under commission"
         box=QDialog(self); box.setWindowTitle(f"License D&D-LIC-{int(row.get('id',0)):06d}"); layout=QVBoxLayout(box)
         layout.addWidget(QLabel(f"<b>D&D-LIC-{int(row.get('id',0)):06d}</b>"))
-        info=QLabel(f"Artist: {artist_name}\nBeat: {beat_name}\nLicense: {str(row.get('license_type','')).upper()}\nPrice: {row.get('currency','USD')} {row.get('price')}\nPayment status: {row.get('status')}\nPurchased: {row.get('purchased_at')}\nMessenger share: {row.get('mailing_share_percent',0)}% ({row.get('mailing_share',0)} {row.get('currency','USD')})")
+        info=QLabel(f"Artist: {artist_name}\nBeat: {beat_name}\nLicense: {str(row.get('license_type','')).upper()}\nGross sale: {row.get('currency','USD')} {row.get('price')}\nPayment status: {row.get('status')}\nPurchased: {row.get('purchased_at')}\nMessenger: {row.get('messenger_name') or 'None'} • {row.get('mailing_share_percent',0)}% ({row.get('mailing_share',0)} {row.get('currency','USD')})")
         info.setWordWrap(True); layout.addWidget(info)
         split_label=QLabel("PAYMENT SPLIT"); split_label.setStyleSheet("font-size:12px;font-weight:700;"); layout.addWidget(split_label)
         splits=QListWidget(); splits.setMaximumHeight(140); layout.addWidget(splits)
         try:
-            split_rows=self.api.license_splits(int(row.get("id")))
-            personal=sum(float(sp.get('amount',0) or 0) for sp in split_rows if sp.get('user_id') == (self.api.user or {}).get('id'))
-            gross=float(row.get('price',0) or 0)
-            info.setText(info.text() + f"\nYour recorded earnings: {row.get('currency','USD')} {personal:,.2f}")
+            financial=self.api.license_financial_summary(int(row.get("id")))
+            split_rows=financial.get('splits') or []
+            personal=float(financial.get('personal_earnings',0) or 0)
+            personal_pct=financial.get('personal_percent','0')
+            gross=financial.get('gross_price',row.get('price',0))
+            balanced=bool(financial.get('balanced'))
+            info.setText(info.text() + f"\nYour actual earnings: {row.get('currency','USD')} {personal:,.2f} ({personal_pct}%)\nFinancial check: {'OK' if balanced else 'ERROR — split does not balance'}")
             for sp in split_rows:
                 splits.addItem(f"{sp.get('display_name','-')}  •  {sp.get('role','producer')}  •  {sp.get('percent','0')}%  •  {sp.get('currency','USD')} {sp.get('amount','0')}")
             if not split_rows: splits.addItem("No split snapshot available for this legacy license.")

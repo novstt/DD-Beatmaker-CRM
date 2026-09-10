@@ -123,6 +123,12 @@ def calculate_splits(
     if not clean:
         return []
 
+    # A financial Messenger split must always belong to a real account.
+    # The API layer validates this too, but keeping the invariant here prevents
+    # future callers from accidentally creating an unowned 10% split.
+    if messenger is not None and messenger.get("user_id") is None:
+        raise ValueError("Messenger must resolve to a registered user account")
+
     # Messenger is now an explicit role on the sale, not a property of the beat
     # and not inferred from whether the account creating the sale is a producer.
     # This keeps the financial record deterministic: a producer can sell their own

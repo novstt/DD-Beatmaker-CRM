@@ -33,3 +33,24 @@ def test_no_messenger_keeps_100_percent_for_producers():
     ], seller_id=1)
     assert sum(r["share_percent"] for r in rows) == Decimal("100.00")
     assert sum(r["amount"] for r in rows) == Decimal("100.00")
+
+
+def test_messenger_is_only_ten_percent_of_gross():
+    rows=calculate_splits(Decimal("30"), [
+        {"user_id":1,"display_name":"SLV","share_percent":Decimal("50")},
+        {"user_id":2,"display_name":"DeddyCar","share_percent":Decimal("50")},
+    ], seller_id=3, messenger={"user_id":3,"display_name":"ThePlugg"})
+    me=[r for r in rows if r["user_id"]==3 and r["role"]=="messenger"][0]
+    assert me["amount"] == Decimal("3.00")
+    assert me["share_percent"] == Decimal("10.00")
+    assert sum(r["amount"] for r in rows if r["role"]=="producer") == Decimal("27.00")
+
+def test_unresolved_messenger_cannot_create_financial_split():
+    try:
+        calculate_splits(Decimal("100"), [
+            {"user_id": 1, "display_name": "SLV", "share_percent": Decimal("100")},
+        ], seller_id=1, messenger={"user_id": None, "display_name": "DE PLUG"})
+    except ValueError as exc:
+        assert "registered user account" in str(exc)
+    else:
+        raise AssertionError("Unresolved Messenger must never receive a financial split")

@@ -371,7 +371,22 @@ def import_backup(payload:dict,db:Session=Depends(get_db),current_user:User=Depe
     for srow in payload.get('license_splits') or []:
         local_lid=license_map.get(str(srow.get('license_id')))
         if not local_lid: continue
-        split_name=str(srow.get('display_name') or 'Unknown').strip(); split_user=resolve_user(db,split_name) if split_name else None; db.add(LicenseSplit(license_id=local_lid,user_id=split_user.id if split_user else None,display_name=split_name,role=str(srow.get('role') or 'producer'),percent=Decimal(str(srow.get('percent') or '0')),amount=Decimal(str(srow.get('amount') or '0')),currency=str(srow.get('currency') or current_user.currency)))
+        split_name=str(srow.get('display_name') or 'Unknown').strip()
+        # Preserve the historical participant identity whenever the backup has
+        # a user_id. Never re-resolve a registered collaborator by display name:
+        # aliases/usernames can change and that would redirect old earnings.
+        raw_uid=srow.get('user_id')
+        split_user_id=None
+        try:
+            candidate_uid=int(raw_uid) if raw_uid is not None else None
+            if candidate_uid and db.get(User, candidate_uid):
+                split_user_id=candidate_uid
+        except Exception:
+            split_user_id=None
+        if split_user_id is None and split_name:
+            split_user=resolve_user(db,split_name)
+            split_user_id=split_user.id if split_user else None
+        db.add(LicenseSplit(license_id=local_lid,user_id=split_user_id,display_name=split_name,role=str(srow.get('role') or 'producer'),percent=Decimal(str(srow.get('percent') or '0')),amount=Decimal(str(srow.get('amount') or '0')),currency=str(srow.get('currency') or current_user.currency)))
     for row in payload.get('loop_sends') or []:
         aid=artist_map.get(str(row.get('artist_id')))
         if aid:

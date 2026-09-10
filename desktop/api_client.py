@@ -121,6 +121,14 @@ class ApiClient:
     def producer_check(self, username):
         return self._request("GET", "/api/beats/producer-check", params={"username": username})
 
+    def messenger_check(self, username):
+        """Resolve a Messenger against the production API.
+
+        Messenger is a financial recipient, so only registered accounts are
+        valid. The desktop UI uses this endpoint before creating a license.
+        """
+        return self._request("GET", "/api/beats/producer-check", params={"username": username})
+
     def create_beat(self, name, bpm, musical_key, status, producer_username=None, co_producer_usernames=None):
         result=self._request("POST","/api/beats",json={"name":name,"bpm":bpm,"musical_key":musical_key,"status":status,"producer_username":producer_username,"co_producer_usernames":co_producer_usernames or []})
         self._invalidate("beats"); return result
@@ -300,6 +308,9 @@ class ApiClient:
 
     def license_splits(self, license_id):
         return self._request("GET", f"/api/licenses/{license_id}/splits")
+
+    def license_financial_summary(self, license_id):
+        return self._request("GET", f"/api/licenses/{license_id}/financial-summary")
 
     def artist_score(self, artist_id):
         return self._request("GET", f"/api/workspace/artists/{artist_id}/score")

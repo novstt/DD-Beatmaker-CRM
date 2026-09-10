@@ -114,12 +114,16 @@ def create_license(data:LicenseCreate,db:Session=Depends(get_db),current_user:Us
     messenger = None
     messenger_name = None
     messenger_id = None
-    if beat and data.messenger_username:
+    if data.messenger_username:
         raw_messenger = str(data.messenger_username).strip()
+        if not beat:
+            raise HTTPException(422, "Messenger can only be selected for a license linked to a beat")
         if raw_messenger:
             messenger_user = resolve_user(db, raw_messenger)
-            messenger_id = messenger_user.id if messenger_user else None
-            messenger_name = messenger_user.username if messenger_user else canonical(raw_messenger)
+            if not messenger_user:
+                raise HTTPException(422, f'Messenger account "{raw_messenger}" was not found. The license was not created.')
+            messenger_id = messenger_user.id
+            messenger_name = messenger_user.username
             messenger = {"user_id": messenger_id, "display_name": messenger_name}
 
     purchased=datetime.now(timezone.utc)
@@ -143,8 +147,8 @@ def create_license(data:LicenseCreate,db:Session=Depends(get_db),current_user:Us
     )
     db.add(row); db.flush()
     db.add(LicenseEvent(license_id=row.id,event_type="created",new_status=row.status,note="License created"))
-    # Immutable split snapshot for this sale. Only registered producer credits
-    # participate in financial distribution. External BeatCredit rows remain display-only.
+    # Immutable split snapshot for this sale. Registered and external producer credits
+    # both participate in financial distribution; the snapshot is the source of truth.
     split_inputs = producers
 
     if not split_inputs:
@@ -189,18 +193,38 @@ def create_license(data:LicenseCreate,db:Session=Depends(get_db),current_user:Us
         db.rollback()
         raise HTTPException(500, 'Financial split invariant failed; sale was not saved')
 
-    # Notify every registered producer about paid sales with their exact immutable split.
+    # Paid-sale notifications are generated from the immutable split snapshot.
     if data.status == "paid":
-        for uid,label,pct,amount in producer_splits:
-            if not uid: continue
-            if messenger_pct > 0:
-                message=(f'License #{row.id} for beat "{beat.name}" was sold by messenger {current_user.username} for {data.price} {currency}.\n\n'
-                         f'Messenger share - {messenger_pct}% - {messenger_amount} {currency}\n'
-                         f'Your share - {pct}% - {amount} {currency}')
-            else:
-                message=(f'License #{row.id} for beat "{beat.name}" was sold by {current_user.username} for {data.price} {currency}.\n\n'
-                         f'Your share - {pct}% - {amount} {currency}')
-            db.add(Notification(user_id=uid,type="license_sold",title="LICENSE SOLD",message=message,is_read=False))
+        for uid, label, pct, amount in producer_splits:
+            if not uid:
+                continue
+            message = (
+                f'License #{row.id} for beat "{beat.name}" was recorded by {current_user.username}.\n\n'
+                + (
+                    f'Messenger: {messenger_name} — {messenger_pct}% — {messenger_amount} {currency}\n'
+                    if messenger_split else ""
+                )
+                + f'Your producer share: {pct}% — {amount} {currency}'
+            )
+            db.add(Notification(
+                user_id=uid, type="license_sold", title="LICENSE SOLD",
+                message=message, is_read=False,
+            ))
+
+        # Messenger gets its own notification. This is intentionally outside
+        # the producer loop so it is sent exactly once.
+        if messenger_split and messenger_split["user_id"]:
+            db.add(Notification(
+                user_id=messenger_split["user_id"],
+                type="license_sold_messenger",
+                title="LICENSE SOLD — MESSENGER SHARE",
+                message=(
+                    f'License #{row.id} for beat "{beat.name}" was sold for {data.price} {currency}.\n\n'
+                    f'Your messenger share: {messenger_pct}% — {messenger_amount} {currency}'
+                ),
+                is_read=False,
+            ))
+
     db.commit(); db.refresh(row); return row
 
 
@@ -221,23 +245,19 @@ def update_license_status(license_id:int,new_status:str,db:Session=Depends(get_d
         # A pending sale already has its immutable split snapshot from creation.
         # Legacy/imported licenses without splits are intentionally not auto-reconstructed.
         if new_status == "paid":
-            existing_splits = list(db.scalars(select(LicenseSplit).where(LicenseSplit.license_id == row.id)).all())
-            if not existing_splits:
-                raise HTTPException(409, "Cannot mark this license as paid because its split snapshot is missing. Create a new sale or restore the historical split manually.")
-
-        row.status=new_status
-        latest=db.scalar(select(LicenseVersion).where(LicenseVersion.license_id==row.id).order_by(LicenseVersion.version_no.desc()))
-        version_no=(latest.version_no+1 if latest else 1)
-        snap={"license_id":row.id,"artist_id":row.artist_id,"beat_id":row.beat_id,"license_type":row.license_type,"price":str(row.price),"currency":row.currency,"status":row.status,"mailing_share_percent":str(row.mailing_share_percent),"producer_share_percent":str(row.producer_share_percent),"is_producer":row.is_producer,"is_messenger":row.is_messenger,"notes":row.notes}
-        db.add(LicenseVersion(license_id=row.id,version_no=version_no,snapshot_json=json.dumps(snap,ensure_ascii=False)))
-
-        if new_status == "paid":
-            # Idempotent notification: the license id is part of the message so a
-            # repeated pending->paid request cannot spam collaborators.
+            # Idempotent notifications are reconstructed only from the immutable
+            # LicenseSplit snapshot. No split is recalculated here.
             beat = db.get(Beat, row.beat_id) if row.beat_id else None
             if beat:
-                split_rows = list(db.scalars(select(LicenseSplit).where(LicenseSplit.license_id == row.id, LicenseSplit.role == "producer")).all())
-                messenger = db.scalar(select(LicenseSplit).where(LicenseSplit.license_id == row.id, LicenseSplit.role == "messenger"))
+                split_rows = list(db.scalars(select(LicenseSplit).where(
+                    LicenseSplit.license_id == row.id,
+                    LicenseSplit.role == "producer",
+                )).all())
+                messenger = db.scalar(select(LicenseSplit).where(
+                    LicenseSplit.license_id == row.id,
+                    LicenseSplit.role == "messenger",
+                ))
+
                 for split in split_rows:
                     if not split.user_id:
                         continue
@@ -248,14 +268,36 @@ def update_license_status(license_id:int,new_status:str,db:Session=Depends(get_d
                     ))
                     if already:
                         continue
-                    if messenger:
-                        message=(f'License #{row.id} for beat "{beat.name}" was sold by messenger {current_user.username} for {row.price} {row.currency}.\n\n'
-                                 f'Messenger share - {messenger.percent}% - {messenger.amount} {row.currency}\n'
-                                 f'Your share - {split.percent}% - {split.amount} {row.currency}')
-                    else:
-                        message=(f'License #{row.id} for beat "{beat.name}" was sold by {current_user.username} for {row.price} {row.currency}.\n\n'
-                                 f'Your share - {split.percent}% - {split.amount} {row.currency}')
-                    db.add(Notification(user_id=split.user_id,type="license_sold",title="LICENSE SOLD",message=message,is_read=False))
+                    message = (
+                        f'License #{row.id} for beat "{beat.name}" was recorded by {current_user.username}.\n\n'
+                        + (
+                            f'Messenger: {messenger.display_name} — {messenger.percent}% — {messenger.amount} {row.currency}\n'
+                            if messenger else ""
+                        )
+                        + f'Your producer share: {split.percent}% — {split.amount} {row.currency}'
+                    )
+                    db.add(Notification(
+                        user_id=split.user_id, type="license_sold",
+                        title="LICENSE SOLD", message=message, is_read=False,
+                    ))
+
+                if messenger and messenger.user_id:
+                    already_messenger = db.scalar(select(Notification.id).where(
+                        Notification.user_id == messenger.user_id,
+                        Notification.type == "license_sold_messenger",
+                        Notification.message.like(f"License #{row.id} %"),
+                    ))
+                    if not already_messenger:
+                        db.add(Notification(
+                            user_id=messenger.user_id,
+                            type="license_sold_messenger",
+                            title="LICENSE SOLD — MESSENGER SHARE",
+                            message=(
+                                f'License #{row.id} for beat "{beat.name}" was sold for {row.price} {row.currency}.\n\n'
+                                f'Your messenger share: {messenger.percent}% — {messenger.amount} {row.currency}'
+                            ),
+                            is_read=False,
+                        ))
 
         db.add(LicenseEvent(license_id=row.id,event_type="status_changed",old_status=old,new_status=new_status,note=f"Payment status changed from {old} to {new_status}"))
         db.commit(); db.refresh(row)
@@ -269,6 +311,36 @@ def license_splits(license_id:int,db:Session=Depends(get_db),current_user:User=D
     if not row: raise HTTPException(404,'License not found')
     rows=list(db.scalars(select(LicenseSplit).where(LicenseSplit.license_id==license_id).order_by(LicenseSplit.id.asc())).all())
     return [{'id':x.id,'user_id':x.user_id,'display_name':x.display_name,'role':x.role,'percent':str(x.percent),'amount':str(x.amount),'currency':x.currency} for x in rows]
+
+@router.get('/{license_id}/financial-summary')
+def license_financial_summary(license_id:int, db:Session=Depends(get_db), current_user:User=Depends(get_current_user)):
+    """Return gross sale and the immutable amount actually earned by this account.
+
+    License.price is gross revenue and must never be treated as the caller's income.
+    LicenseSplit is the only source of personal earnings.
+    """
+    row=db.scalar(_accessible_license_stmt(current_user.id).where(License.id==license_id))
+    if not row:
+        raise HTTPException(404, 'License not found')
+    rows=list(db.scalars(select(LicenseSplit).where(LicenseSplit.license_id==license_id).order_by(LicenseSplit.id.asc())).all())
+    personal=sum((Decimal(str(x.amount)) for x in rows if x.user_id==current_user.id), Decimal('0.00'))
+    total_amount=sum((Decimal(str(x.amount)) for x in rows), Decimal('0.00'))
+    total_percent=sum((Decimal(str(x.percent)) for x in rows), Decimal('0.00'))
+    return {
+        'license_id': row.id,
+        'gross_price': str(row.price),
+        'currency': row.currency,
+        'status': row.status,
+        'personal_earnings': str(personal),
+        'personal_percent': str(sum((Decimal(str(x.percent)) for x in rows if x.user_id==current_user.id), Decimal('0.00'))),
+        'total_split_amount': str(total_amount),
+        'total_split_percent': str(total_percent),
+        'balanced': total_amount == Decimal(str(row.price)) and total_percent == Decimal('100.00'),
+        'splits': [
+            {'id':x.id,'user_id':x.user_id,'display_name':x.display_name,'role':x.role,'percent':str(x.percent),'amount':str(x.amount),'currency':x.currency}
+            for x in rows
+        ],
+    }
 
 @router.get('/{license_id}/versions')
 def license_versions(license_id:int,db:Session=Depends(get_db),current_user:User=Depends(get_current_user)):

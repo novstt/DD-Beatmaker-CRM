@@ -167,9 +167,15 @@ def dashboard(
     other_producer_earnings = sum((Decimal(str(split.amount)) for split, _ in paid_split_rows if split.role == 'producer'), Decimal('0'))
     producer_earnings_by_currency = {}
     messenger_earnings_by_currency = {}
+    role_earnings_by_currency = {}
     for split, sale in paid_split_rows:
+        amount = Decimal(str(split.amount))
         target = producer_earnings_by_currency if split.role == 'producer' else messenger_earnings_by_currency
-        target[sale.currency] = target.get(sale.currency, Decimal('0')) + Decimal(str(split.amount))
+        target[sale.currency] = target.get(sale.currency, Decimal('0')) + amount
+        role_earnings_by_currency.setdefault(split.role, {})
+        role_earnings_by_currency[split.role][sale.currency] = (
+            role_earnings_by_currency[split.role].get(sale.currency, Decimal('0')) + amount
+        )
 
     recent_sales = []
     for x in recent:
@@ -259,6 +265,10 @@ def dashboard(
         "messenger_earnings": str(messenger_earnings),
         "producer_earnings_by_currency": {c: str(v) for c,v in sorted(producer_earnings_by_currency.items())},
         "messenger_earnings_by_currency": {c: str(v) for c,v in sorted(messenger_earnings_by_currency.items())},
+        "role_earnings_by_currency": {
+            role: {c: str(v) for c, v in sorted(values.items())}
+            for role, values in sorted(role_earnings_by_currency.items())
+        },
         "artists": artists_count,
         "beats_sent": len(sends),
         "license_types": by_type,
