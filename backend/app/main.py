@@ -26,8 +26,6 @@ async def lifespan(app: FastAPI):
         print("STARTUP 5: database connected", flush=True)
 
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS mailing_share_percent NUMERIC(5,2) DEFAULT 0"))
-
-        conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS mailing_share_percent NUMERIC(5,2) DEFAULT 0"))
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS producer_share_percent NUMERIC(5,2) DEFAULT 0"))
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS is_producer BOOLEAN DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE licenses ADD COLUMN IF NOT EXISTS is_messenger BOOLEAN DEFAULT FALSE"))
@@ -55,7 +53,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Beatmaker App API",
-    version="1.0.0",
+    version="1.0.8",
     description="Backend for a multi-user beatmaker CRM and analytics application.",
     lifespan=lifespan,
 )
