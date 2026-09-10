@@ -48,7 +48,10 @@ class User(Base):
         cascade="all, delete-orphan",
     )
     licenses = relationship(
-        "License", back_populates="user", cascade="all, delete-orphan"
+        "License",
+        back_populates="user",
+        foreign_keys="License.user_id",
+        cascade="all, delete-orphan",
     )
     beat_producer_links = relationship(
         "BeatProducer", back_populates="user", cascade="all, delete-orphan"
