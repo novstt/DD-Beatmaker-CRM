@@ -85,6 +85,18 @@ def _accessible_license_stmt(user_id:int):
         (License.id.in_(select(LicenseSplit.license_id).where(LicenseSplit.user_id==user_id)))
     )
 
+
+@router.get("/messenger-check")
+def messenger_check(username: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Resolve a registered Messenger account before a sale is created."""
+    raw = (username or "").strip()
+    if not raw:
+        raise HTTPException(422, "Messenger username is required")
+    user = resolve_user(db, raw)
+    if not user:
+        return {"found": False, "username": raw, "user_id": None}
+    return {"found": True, "username": user.username, "user_id": user.id}
+
 @router.get("",response_model=list[LicenseOut])
 def list_licenses(db:Session=Depends(get_db),current_user:User=Depends(get_current_user)):
     return list(db.scalars(_accessible_license_stmt(current_user.id).order_by(License.purchased_at.desc())).all())

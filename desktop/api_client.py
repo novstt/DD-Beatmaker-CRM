@@ -22,17 +22,25 @@ class ApiClient:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
     def _request(self, method, path, **kwargs):
-        response = requests.request(
-            method, self.base_url + path,
-            headers=self._headers(), timeout=30, **kwargs
-        )
+        try:
+            response = requests.request(
+                method, self.base_url + path,
+                headers=self._headers(), timeout=30, **kwargs
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Network error: {exc}") from exc
         if not response.ok:
             try:
                 detail = response.json().get("detail")
             except Exception:
                 detail = response.text
             raise RuntimeError(f"HTTP {response.status_code}: {detail}")
-        return response.json() if response.content else None
+        if not response.content:
+            return None
+        content_type = response.headers.get("content-type", "").lower()
+        if "application/json" in content_type:
+            return response.json()
+        return response.text
 
     def register(self, username, email, password):
         return self._request(
@@ -122,12 +130,11 @@ class ApiClient:
         return self._request("GET", "/api/beats/producer-check", params={"username": username})
 
     def messenger_check(self, username):
-        """Resolve a Messenger against the production API.
-
-        Messenger is a financial recipient, so only registered accounts are
-        valid. The desktop UI uses this endpoint before creating a license.
-        """
-        return self._request("GET", "/api/beats/producer-check", params={"username": username})
+        """Resolve a registered Messenger against the production API."""
+        return self._request(
+            "GET", "/api/licenses/messenger-check",
+            params={"username": username},
+        )
 
     def create_beat(self, name, bpm, musical_key, status, producer_username=None, co_producer_usernames=None):
         result=self._request("POST","/api/beats",json={"name":name,"bpm":bpm,"musical_key":musical_key,"status":status,"producer_username":producer_username,"co_producer_usernames":co_producer_usernames or []})

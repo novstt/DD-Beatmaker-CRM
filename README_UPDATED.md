@@ -23,6 +23,15 @@ The supplied archive did not contain the root-level launcher main.py, so this pa
 Added a root-level `main.py` launcher so running `python main.py` from the project root always starts the updated desktop application in `desktop/main.py`. Version bumped to 1.0.4 so the Welcome/What's New screen is shown again.
 
 
+## 1.0.8 release notes
+- dedicated `/api/licenses/messenger-check` endpoint; the desktop Messenger preflight no longer reuses the producer-check route;
+- workspace goal periods are validated and actually drive progress windows (`month`, `last_month`, `year`, `all`);
+- artist timelines include licenses where the current account earns through an immutable split, not only licenses created by that account;
+- backup export includes licenses accessible through the user's immutable split rows;
+- desktop API reports network failures cleanly and accepts non-JSON successful responses;
+- backend and desktop system versions are aligned at 1.0.8;
+- duplicate startup migration statement removed.
+
 ## 1.0.6 release notes
 - `License.price` is gross sale value only. Personal income comes exclusively from immutable `LicenseSplit.amount`.
 - Messenger is a per-license role and receives 10% when selected; producer pool receives the remaining 90%.

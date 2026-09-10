@@ -2,7 +2,7 @@ from fastapi import APIRouter
 from app.config import settings
 import os
 router=APIRouter()
-APP_VERSION='0.27.0'
+APP_VERSION='1.0.8'
 @router.get('/version')
 def version():
     latest=os.getenv('DD_LATEST_VERSION', APP_VERSION)

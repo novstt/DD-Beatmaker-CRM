@@ -30,12 +30,24 @@ class FavoriteIn(BaseModel):
 class TagIn(BaseModel):
     name:str=Field(min_length=1,max_length=60)
 
+SUPPORTED_GOAL_PERIODS = {'month', 'year', 'all', 'last_month'}
+
 def _period_start(period, now):
+    period = (period or 'month').strip().lower()
     if period == 'year':
         return datetime(now.year, 1, 1, tzinfo=timezone.utc)
     if period == 'all':
         return None
-    return datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    if period == 'last_month':
+        first_this = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        return (
+            first_this.replace(year=first_this.year - 1, month=12)
+            if first_this.month == 1
+            else first_this.replace(month=first_this.month - 1)
+        )
+    if period == 'month':
+        return datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    raise ValueError(f'Unsupported goal period: {period}')
 
 def _goal_metric(title):
     t=(title or '').casefold()
@@ -64,23 +76,26 @@ def overview(db:Session=Depends(get_db), current_user:User=Depends(get_current_u
     goal_out=[]
     for g in goals:
         metric=_goal_metric(g.title)
-        started=g.created_at or now
+        goal_period=(g.period or 'month').strip().lower()
+        if goal_period not in SUPPORTED_GOAL_PERIODS:
+            goal_period = 'month'
+        started=_period_start(goal_period, now)
         goal_currency=(getattr(g,'currency',None) or 'USD').upper()
         if metric=='revenue':
             current=sum((Decimal(str(split.amount)) for split, sale in earned_split_rows
                          if sale.status=='paid' and sale.currency==goal_currency
-                         and sale.purchased_at and sale.purchased_at>=started), Decimal('0'))
+                         and sale.purchased_at and (started is None or sale.purchased_at>=started)), Decimal('0'))
         elif metric=='licenses':
             # Count paid shared-license sales where this account has a split.
             current_license_ids={
                 sale.id for split, sale in earned_split_rows
-                if sale.status=='paid' and sale.purchased_at and sale.purchased_at>=started
+                if sale.status=='paid' and sale.purchased_at and (started is None or sale.purchased_at>=started)
             }
             current=Decimal(str(len(current_license_ids)))
         elif metric=='artists':
-            current=Decimal(str(sum(1 for x in user_artists if x.created_at and x.created_at>=started)))
+            current=Decimal(str(sum(1 for x in user_artists if x.created_at and (started is None or x.created_at>=started))))
         else:
-            current=Decimal(str(sum(1 for x in sends if x.sent_at and x.sent_at>=started)))
+            current=Decimal(str(sum(1 for x in sends if x.sent_at and (started is None or x.sent_at>=started))))
         # Never let a goal exceed 100% visually, but retain the full current value for history.
         target=Decimal(str(g.target or 0))
         pct=(current/target*Decimal('100')) if target>0 else Decimal('0')
@@ -97,9 +112,32 @@ def artist_timeline(artist_id:int, db:Session=Depends(get_db), current_user:User
     sends=db.execute(select(BeatSend,Beat).join(Beat,Beat.id==BeatSend.beat_id).where(BeatSend.user_id==current_user.id,BeatSend.artist_id==artist_id).order_by(BeatSend.sent_at.desc())).all()
     for send,beat in sends:
         events.append({'kind':'beat_sent','at':send.sent_at.isoformat() if send.sent_at else None,'title':'Beat sent','detail':beat.name,'status':send.status})
-    licenses=list(db.scalars(select(License).where(License.user_id==current_user.id,License.artist_id==artist_id).order_by(License.purchased_at.desc())).all())
+    licenses=list(db.scalars(
+        select(License).join(
+            LicenseSplit, LicenseSplit.license_id==License.id
+        ).where(
+            LicenseSplit.user_id==current_user.id,
+            License.artist_id==artist_id
+        ).distinct().order_by(License.purchased_at.desc())
+    ).all())
     for lic in licenses:
-        events.append({'kind':'license','at':lic.purchased_at.isoformat() if lic.purchased_at else None,'title':'License sold','detail':f"{str(lic.license_type).upper()} • ${lic.price}",'status':lic.status,'license_id':lic.id})
+        personal = sum(
+            (Decimal(str(x.amount)) for x in db.scalars(
+                select(LicenseSplit).where(
+                    LicenseSplit.license_id==lic.id,
+                    LicenseSplit.user_id==current_user.id,
+                )
+            ).all()),
+            Decimal('0.00')
+        )
+        events.append({
+            'kind':'license',
+            'at':lic.purchased_at.isoformat() if lic.purchased_at else None,
+            'title':'License sold',
+            'detail':f"{str(lic.license_type).upper()} • {lic.price} {lic.currency} • your {personal} {lic.currency}",
+            'status':lic.status,
+            'license_id':lic.id,
+        })
     followups=list(db.scalars(select(WorkspaceFollowUp).where(WorkspaceFollowUp.user_id==current_user.id,WorkspaceFollowUp.artist_id==artist_id).order_by(WorkspaceFollowUp.due_at.desc())).all())
     for f in followups:
         events.append({'kind':'followup','at':f.due_at.isoformat() if f.due_at else None,'title':f.title,'detail':f.notes or 'Follow-up','status':'done' if f.done else 'pending'})
@@ -125,7 +163,9 @@ def create_goal(data:GoalIn,db:Session=Depends(get_db), current_user:User=Depend
     if data.target <= 0: raise HTTPException(422,'Goal target must be greater than 0')
     currency=(data.currency or 'USD').upper()
     if currency not in {'USD','EUR','CHF'}: raise HTTPException(422,'Unsupported goal currency')
-    g=WorkspaceGoal(user_id=current_user.id,title=data.title.strip(),target=data.target,current=Decimal('0'),period=data.period,currency=currency)
+    period=(data.period or 'month').strip().lower()
+    if period not in SUPPORTED_GOAL_PERIODS: raise HTTPException(422,'Unsupported goal period')
+    g=WorkspaceGoal(user_id=current_user.id,title=data.title.strip(),target=data.target,current=Decimal('0'),period=period,currency=currency)
     db.add(g); db.commit(); db.refresh(g)
     return {'id':g.id,'title':g.title,'target':str(g.target),'current':'0','period':g.period}
 
@@ -135,7 +175,9 @@ def update_goal(goal_id:int,data:GoalIn,db:Session=Depends(get_db), current_user
     if not g: raise HTTPException(404,'Goal not found')
     currency=(data.currency or getattr(g,'currency',None) or 'USD').upper()
     if currency not in {'USD','EUR','CHF'}: raise HTTPException(422,'Unsupported goal currency')
-    g.title=data.title.strip(); g.target=data.target; g.period=data.period; g.currency=currency
+    period=(data.period or 'month').strip().lower()
+    if period not in SUPPORTED_GOAL_PERIODS: raise HTTPException(422,'Unsupported goal period')
+    g.title=data.title.strip(); g.target=data.target; g.period=period; g.currency=currency
     # Goal progress is always measured from the original creation date. Editing a target
     # must not wipe the progress already earned since that date.
     db.commit(); db.refresh(g)
@@ -194,7 +236,12 @@ def restore(entity_type:str,entity_id:int,db:Session=Depends(get_db), current_us
 def export_backup(db:Session=Depends(get_db), current_user:User=Depends(get_current_user)):
     artists=db.execute(select(UserArtist,Artist).join(Artist,Artist.id==UserArtist.artist_id).where(UserArtist.user_id==current_user.id)).all()
     beats=db.scalars(select(Beat).where((Beat.user_id==current_user.id)|(Beat.messenger_id==current_user.id))).all()
-    licenses=db.scalars(select(License).where(License.user_id==current_user.id).order_by(License.id)).all()
+    licenses=list(db.scalars(
+        select(License).where(
+            (License.user_id==current_user.id) |
+            License.id.in_(select(LicenseSplit.license_id).where(LicenseSplit.user_id==current_user.id))
+        ).order_by(License.id)
+    ).all())
     beat_rows=[]
     for b in beats:
         beat_rows.append({'id':b.id,'name':b.name,'bpm':b.bpm,'musical_key':b.musical_key,'status':b.status,'producer_username':(db.get(User,b.user_id).username if b.user_id else None),'messenger_username':(db.get(User,b.messenger_id).username if b.messenger_id else None)})
